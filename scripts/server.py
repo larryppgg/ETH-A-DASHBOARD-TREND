@@ -70,7 +70,7 @@ def call_doubao(prompt, model, api_key, proxies, system_prompt):
     req = request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", f"Bearer {api_key}")
-    with open_url(req, timeout=30, candidates=proxies) as resp:
+    with open_url(req, timeout=310, candidates=proxies) as resp:
         raw = resp.read().decode("utf-8")
     parsed = json.loads(raw)
     choices = parsed.get("choices") or []
