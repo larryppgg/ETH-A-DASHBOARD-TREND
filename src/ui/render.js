@@ -178,6 +178,41 @@ function buildPoints(values, width, height, padding, min, max) {
   });
 }
 
+function buildVolatilityBars(series) {
+  const bars = [];
+  for (let i = 1; i < series.length; i += 1) {
+    const prev = series[i - 1];
+    const curr = series[i];
+    if (typeof prev !== "number" || typeof curr !== "number") {
+      bars.push(0);
+    } else {
+      bars.push(Math.abs(curr - prev));
+    }
+  }
+  return bars;
+}
+
+function buildEvents(history) {
+  const events = [];
+  for (let i = 1; i < history.length; i += 1) {
+    const prev = history[i - 1];
+    const curr = history[i];
+    if (prev.output.state !== curr.output.state) {
+      events.push({ idx: i, type: "state" });
+    }
+    if (curr.output.extremeAllowed) {
+      events.push({ idx: i, type: "extreme" });
+    }
+    if (curr.output.distributionGate >= 2) {
+      events.push({ idx: i, type: "distribution" });
+    }
+    if ((curr.output.riskNotes || []).some((note) => note.includes("红灯"))) {
+      events.push({ idx: i, type: "risk" });
+    }
+  }
+  return events;
+}
+
 export function renderTimelineOverview(container, legendContainer, history, selectedDate) {
   if (!container) return;
   if (!history.length) {
@@ -189,13 +224,14 @@ export function renderTimelineOverview(container, legendContainer, history, sele
   const betaSeries = buildSeries(sorted, (item) => item.output.beta).map((item) => item.value);
   const confidenceSeries = buildSeries(sorted, (item) => item.output.confidence).map((item) => item.value);
   const fofSeries = buildSeries(sorted, (item) => item.output.fofScore / 100).map((item) => item.value);
+  const volSeries = buildVolatilityBars(betaSeries);
   const allValues = [...betaSeries, ...confidenceSeries, ...fofSeries].filter(
     (value) => typeof value === "number"
   );
   const min = Math.min(...allValues);
   const max = Math.max(...allValues);
   const width = 520;
-  const height = 140;
+  const height = 170;
   const padding = 12;
   const betaPoints = buildPoints(betaSeries, width, height, padding, min, max);
   const confPoints = buildPoints(confidenceSeries, width, height, padding, min, max);
@@ -206,8 +242,36 @@ export function renderTimelineOverview(container, legendContainer, history, sele
   );
   const activeIndex = selectedIndex === -1 ? sorted.length - 1 : selectedIndex;
   const lineX = betaPoints[activeIndex]?.x ?? padding;
+  const events = buildEvents(sorted);
+  const bandHeight = (height - padding * 2) / 3;
+  const bandY1 = padding;
+  const bandY2 = padding + bandHeight;
+  const bandY3 = padding + bandHeight * 2;
 
   const toPath = (points) => points.map((point) => `${point.x},${point.y}`).join(" ");
+  const volMax = Math.max(...volSeries, 0.01);
+  const volBars = volSeries
+    .map((value, index) => {
+      const x = betaPoints[index + 1]?.x ?? padding;
+      const barHeight = (value / volMax) * 28;
+      const y = height - padding - barHeight;
+      return `<rect x="${x - 2}" y="${y}" width="4" height="${barHeight}" fill="rgba(255,255,255,0.15)" />`;
+    })
+    .join("");
+  const eventMarks = events
+    .map((event) => {
+      const x = betaPoints[event.idx]?.x ?? padding;
+      const color =
+        event.type === "state"
+          ? "#e0b65b"
+          : event.type === "risk"
+          ? "#e35654"
+          : event.type === "distribution"
+          ? "#60d6c2"
+          : "#f3a545";
+      return `<circle cx="${x}" cy="${padding - 2}" r="4" fill="${color}" />`;
+    })
+    .join("");
   container.innerHTML = `
     <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
       <defs>
@@ -216,13 +280,18 @@ export function renderTimelineOverview(container, legendContainer, history, sele
           <stop offset="100%" stop-color="#e0b65b" stop-opacity="0" />
         </linearGradient>
       </defs>
+      <rect x="${padding}" y="${bandY1}" width="${width - padding * 2}" height="${bandHeight}" fill="rgba(89,212,143,0.08)" />
+      <rect x="${padding}" y="${bandY2}" width="${width - padding * 2}" height="${bandHeight}" fill="rgba(243,165,69,0.08)" />
+      <rect x="${padding}" y="${bandY3}" width="${width - padding * 2}" height="${bandHeight}" fill="rgba(227,86,84,0.08)" />
       <line x1="${lineX}" y1="10" x2="${lineX}" y2="${height - 10}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 4" />
       <polyline points="${toPath(betaPoints)}" fill="none" stroke="#e0b65b" stroke-width="2" />
       <polyline points="${toPath(confPoints)}" fill="none" stroke="#60d6c2" stroke-width="2" />
       <polyline points="${toPath(fofPoints)}" fill="none" stroke="#59d48f" stroke-width="2" />
+      ${volBars}
       <circle cx="${betaPoints[activeIndex].x}" cy="${betaPoints[activeIndex].y}" r="3.5" fill="#e0b65b" />
       <circle cx="${confPoints[activeIndex].x}" cy="${confPoints[activeIndex].y}" r="3.5" fill="#60d6c2" />
       <circle cx="${fofPoints[activeIndex].x}" cy="${fofPoints[activeIndex].y}" r="3.5" fill="#59d48f" />
+      ${eventMarks}
     </svg>
   `;
   if (legendContainer) {
@@ -230,6 +299,9 @@ export function renderTimelineOverview(container, legendContainer, history, sele
       <span><i class="dot" style="background:#e0b65b"></i>β</span>
       <span><i class="dot" style="background:#60d6c2"></i>置信度</span>
       <span><i class="dot" style="background:#59d48f"></i>FoF</span>
+      <span><i class="dot" style="background:#e35654"></i>风险事件</span>
+      <span><i class="dot" style="background:#f3a545"></i>极限许可</span>
+      <span><i class="dot" style="background:#60d6c2"></i>分发闸门</span>
     `;
   }
 }
