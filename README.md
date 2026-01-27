@@ -32,8 +32,8 @@ npm test
 - 数据台新增“数据覆盖矩阵”，可审计字段值与来源。
 
 ## AI 解读（自动生成）
-1. 复制 `.env.example` 为 `.env` 并填写豆包 API Key。\n
-2. 运行 `npm run dev` 后页面会显示 AI 状态。\n
-3. 运行成功后会自动生成“AI 解读”。\n
+1. 复制 `.env.example` 为 `.env` 并填写豆包 API Key。
+2. 运行 `npm run dev` 后页面会显示 AI 状态。
+3. 运行成功后会自动生成“AI 解读”。
 
 提示：不会在仓库内保存密钥，请只保存在本地 `.env`。
