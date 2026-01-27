@@ -1,0 +1,10 @@
+{
+  "name": "eth-a-dashboard-trend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch": "python3 scripts/collector.py",
+    "dev": "python3 scripts/collector.py && python3 scripts/server.py",
+    "test": "node tests/run.mjs && python3 tests/collector_test.py"
+  }
+}

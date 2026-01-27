@@ -1,0 +1,24 @@
+> python3 scripts/collector.py && python3 scripts/server.py
+
+Serving on http://localhost:5173
+127.0.0.1 - - [25/Jan/2026 13:47:46] "GET /data/auto.json HTTP/1.1" 200 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /styles.css HTTP/1.1" 200 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /app.js HTTP/1.1" 200 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /inputPolicy.js HTTP/1.1" 200 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/pipeline.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /utils.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /ui/render.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /ai/payload.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /ui/ai.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /autoRun.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET 127.0.0.1 - - [25/Jan/2026 13:47:50] "GET 127.0.0.1 - - [25/Jan/2026 13:47:50] "GET 127.0.0.es127.0.0.1 - s H127.1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/riskSwitch.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/leverage.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/supply.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/etf.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/danger.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/svc.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/bpi.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/bcm.js HTTP/1.1" 304 -
+127.0.0.1 - - [25/Jan/2026 13:47:50] "GET /engine/rules/hpm.js HTTP/1.1" 304 -
