@@ -1,10 +1,11 @@
 import { runPipeline } from "./engine/pipeline.js";
 import { dateKey } from "./utils.js";
-import { renderOutput } from "./ui/render.js";
+import { renderOutput, renderTimelineOverview } from "./ui/render.js";
 import { buildAiPayload } from "./ai/payload.js";
 import { renderAiPanel, renderAiStatus } from "./ui/ai.js";
 import { shouldAutoRun } from "./autoRun.js";
 import { needsAutoFetch } from "./inputPolicy.js";
+import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
 const inputKey = "eth_a_dashboard_custom_input";
@@ -68,6 +69,11 @@ const elements = {
   workflowValidate: document.getElementById("workflowValidate"),
   workflowRun: document.getElementById("workflowRun"),
   workflowReplay: document.getElementById("workflowReplay"),
+  timelineOverview: document.getElementById("timelineOverview"),
+  timelineLegend: document.getElementById("timelineLegend"),
+  timelineRange: document.getElementById("timelineRange"),
+  timelineLabel: document.getElementById("timelineLabel"),
+  timelineLatestBtn: document.getElementById("timelineLatestBtn"),
 };
 
 const inputSchema = {
@@ -419,6 +425,52 @@ function showRunStatus(text) {
   elements.runStatus.textContent = text || "";
 }
 
+let selectedDate = null;
+let timelineIndex = buildTimelineIndex([]);
+
+function updateTimeline(history) {
+  timelineIndex = buildTimelineIndex(history);
+  const total = timelineIndex.dates.length;
+  if (elements.timelineRange) {
+    elements.timelineRange.max = Math.max(0, total - 1);
+  }
+}
+
+function renderTimeline(history, date) {
+  updateTimeline(history);
+  const fallbackDate = date || timelineIndex.latestDate;
+  const resolvedDate = pickRecordByDate(history, fallbackDate)
+    ? fallbackDate
+    : nearestDate(timelineIndex.dates, fallbackDate);
+  selectedDate = resolvedDate;
+  if (elements.timelineRange && timelineIndex.dates.length) {
+    const idx = timelineIndex.dates.indexOf(resolvedDate);
+    elements.timelineRange.value = idx >= 0 ? idx : timelineIndex.dates.length - 1;
+  }
+  if (elements.timelineLabel) {
+    elements.timelineLabel.textContent = resolvedDate ? `快照 ${resolvedDate}` : "暂无快照";
+  }
+  renderTimelineOverview(elements.timelineOverview, elements.timelineLegend, history, resolvedDate);
+  return resolvedDate;
+}
+
+function renderSnapshot(history, date) {
+  const resolvedDate = renderTimeline(history, date);
+  const record = pickRecordByDate(history, resolvedDate);
+  if (record) {
+    renderOutput(elements, record, history);
+    if (elements.inputJson) {
+      elements.inputJson.value = JSON.stringify(record.input, null, 2);
+    }
+    if (elements.runDate) {
+      elements.runDate.value = record.date;
+    }
+  } else if (history.length) {
+    const fallback = history[history.length - 1];
+    renderOutput(elements, fallback, history);
+  }
+}
+
 function setWorkflowStatus(target, text) {
   if (!target) return;
   target.textContent = text;
@@ -480,7 +532,7 @@ async function runToday(options = {}) {
     const updated = history.filter((item) => item.date !== targetDate);
     updated.push(record);
     saveHistory(updated);
-    renderOutput(elements, record, updated);
+    renderSnapshot(updated, targetDate);
     runAi(record);
     showRunStatus("完成");
     setWorkflowStatus(elements.workflowRun, "完成");
@@ -494,6 +546,7 @@ async function runToday(options = {}) {
 function clearHistory() {
   localStorage.removeItem(storageKey);
   showError([]);
+  renderTimeline([], null);
 }
 
 function applyCustomInput() {
@@ -582,9 +635,11 @@ function exportCsv(history) {
 }
 
 function syncControls() {
-  elements.runDate.value = dateKey();
+  if (elements.runDate && !elements.runDate.value) {
+    elements.runDate.value = dateKey();
+  }
   const customInput = loadCustomInput();
-  if (customInput) {
+  if (customInput && elements.inputJson && !elements.inputJson.value) {
     elements.inputJson.value = JSON.stringify(customInput, null, 2);
   }
 }
@@ -619,13 +674,30 @@ elements.validateBtn.addEventListener("click", () => {
   }
 });
 elements.fetchBtn.addEventListener("click", autoFetch);
+if (elements.timelineRange) {
+  elements.timelineRange.addEventListener("input", () => {
+    const history = loadHistory();
+    const idx = Number(elements.timelineRange.value || 0);
+    const date = timelineIndex.dates[idx];
+    if (date) {
+      renderSnapshot(history, date);
+    }
+  });
+}
+if (elements.timelineLatestBtn) {
+  elements.timelineLatestBtn.addEventListener("click", () => {
+    const history = loadHistory();
+    renderSnapshot(history, timelineIndex.latestDate);
+  });
+}
 window.__runToday__ = () => runToday({ mode: "auto" });
 window.__autoFetch__ = autoFetch;
 
 const history = loadHistory();
 if (history.length) {
-  const latest = history.sort((a, b) => b.date.localeCompare(a.date))[0];
-  renderOutput(elements, latest, history);
+  renderSnapshot(history, null);
+} else {
+  renderTimeline([], null);
 }
 
 syncControls();

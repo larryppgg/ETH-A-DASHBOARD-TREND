@@ -1,5 +1,6 @@
 import { formatNumber } from "../utils.js";
 import { fieldMeta, coverageGroups } from "./fieldMeta.js";
+import { buildSeries } from "./timeline.js";
 import {
   buildActionSummary,
   buildCounterfactuals,
@@ -166,6 +167,71 @@ export function renderChart(container, series, color) {
       <circle cx="${lastPoint[0]}" cy="${lastPoint[1]}" r="3.5" fill="${color}" />
     </svg>
   `;
+}
+
+function buildPoints(values, width, height, padding, min, max) {
+  const spread = max - min || 1;
+  return values.map((value, index) => {
+    const x = padding + (index / (values.length - 1 || 1)) * (width - padding * 2);
+    const y = height - padding - ((value - min) / spread) * (height - padding * 2);
+    return { x, y };
+  });
+}
+
+export function renderTimelineOverview(container, legendContainer, history, selectedDate) {
+  if (!container) return;
+  if (!history.length) {
+    container.innerHTML = '<div class="inspector-empty">暂无历史记录</div>';
+    if (legendContainer) legendContainer.innerHTML = "";
+    return;
+  }
+  const sorted = [...history].sort((a, b) => a.date.localeCompare(b.date));
+  const betaSeries = buildSeries(sorted, (item) => item.output.beta).map((item) => item.value);
+  const confidenceSeries = buildSeries(sorted, (item) => item.output.confidence).map((item) => item.value);
+  const fofSeries = buildSeries(sorted, (item) => item.output.fofScore / 100).map((item) => item.value);
+  const allValues = [...betaSeries, ...confidenceSeries, ...fofSeries].filter(
+    (value) => typeof value === "number"
+  );
+  const min = Math.min(...allValues);
+  const max = Math.max(...allValues);
+  const width = 520;
+  const height = 140;
+  const padding = 12;
+  const betaPoints = buildPoints(betaSeries, width, height, padding, min, max);
+  const confPoints = buildPoints(confidenceSeries, width, height, padding, min, max);
+  const fofPoints = buildPoints(fofSeries, width, height, padding, min, max);
+  const selectedIndex = Math.max(
+    0,
+    sorted.findIndex((item) => item.date === selectedDate)
+  );
+  const activeIndex = selectedIndex === -1 ? sorted.length - 1 : selectedIndex;
+  const lineX = betaPoints[activeIndex]?.x ?? padding;
+
+  const toPath = (points) => points.map((point) => `${point.x},${point.y}`).join(" ");
+  container.innerHTML = `
+    <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="timeline-beta" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#e0b65b" stop-opacity="0.5" />
+          <stop offset="100%" stop-color="#e0b65b" stop-opacity="0" />
+        </linearGradient>
+      </defs>
+      <line x1="${lineX}" y1="10" x2="${lineX}" y2="${height - 10}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 4" />
+      <polyline points="${toPath(betaPoints)}" fill="none" stroke="#e0b65b" stroke-width="2" />
+      <polyline points="${toPath(confPoints)}" fill="none" stroke="#60d6c2" stroke-width="2" />
+      <polyline points="${toPath(fofPoints)}" fill="none" stroke="#59d48f" stroke-width="2" />
+      <circle cx="${betaPoints[activeIndex].x}" cy="${betaPoints[activeIndex].y}" r="3.5" fill="#e0b65b" />
+      <circle cx="${confPoints[activeIndex].x}" cy="${confPoints[activeIndex].y}" r="3.5" fill="#60d6c2" />
+      <circle cx="${fofPoints[activeIndex].x}" cy="${fofPoints[activeIndex].y}" r="3.5" fill="#59d48f" />
+    </svg>
+  `;
+  if (legendContainer) {
+    legendContainer.innerHTML = `
+      <span><i class="dot" style="background:#e0b65b"></i>β</span>
+      <span><i class="dot" style="background:#60d6c2"></i>置信度</span>
+      <span><i class="dot" style="background:#59d48f"></i>FoF</span>
+    `;
+  }
 }
 
 function formatCoverageValue(value) {
