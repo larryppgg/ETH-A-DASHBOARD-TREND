@@ -303,6 +303,20 @@ export function renderOutput(elements, record, history) {
   elements.distributionValue.textContent = `${output.distributionGate} / 30D`;
   elements.lastRun.textContent = record.date;
 
+  if (elements.timelineLabel && history.length) {
+    const sortedDates = [...history].sort((a, b) => a.date.localeCompare(b.date)).map((item) => item.date);
+    const idx = sortedDates.indexOf(record.date);
+    const safeIndex = idx >= 0 ? idx : sortedDates.length - 1;
+    elements.timelineLabel.textContent = `快照 ${record.date} · ${safeIndex + 1}/${sortedDates.length}`;
+    if (elements.timelineRange) {
+      elements.timelineRange.max = Math.max(0, sortedDates.length - 1);
+      elements.timelineRange.value = safeIndex;
+    }
+    if (elements.timelineOverview) {
+      renderTimelineOverview(elements.timelineOverview, elements.timelineLegend, history, record.date);
+    }
+  }
+
   const aiStatus =
     typeof localStorage !== "undefined" && typeof localStorage.getItem === "function"
       ? localStorage.getItem("eth_a_dashboard_ai_status_v1") || "AI 未连接"
