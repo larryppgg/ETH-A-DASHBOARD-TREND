@@ -8,6 +8,7 @@ import { evalDanger } from "../src/engine/rules/danger.js";
 import { runPipeline } from "../src/engine/pipeline.js";
 import { renderCoverage, renderOutput } from "../src/ui/render.js";
 import { buildActionSummary, buildHealthSummary, buildMissingImpact } from "../src/ui/summary.js";
+import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline.js";
 import { buildOverallPrompt } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
 import { shouldAutoRun } from "../src/autoRun.js";
@@ -261,6 +262,11 @@ function testLayoutSkeleton() {
   const ids = [
     "healthBar",
     "healthFreshness",
+    "timelineOverview",
+    "timelineRange",
+    "timelineLabel",
+    "timelineLatestBtn",
+    "timelineLegend",
     "overviewAction",
     "overviewDrivers",
     "overviewBlocks",
@@ -279,7 +285,15 @@ function testLayoutSkeleton() {
 
 function testStyleTokens() {
   const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf-8");
-  const tokens = [".health-panel", ".health-grid", ".overview-card", ".action-panel", ".workflow"];
+  const tokens = [
+    ".health-panel",
+    ".health-grid",
+    ".timeline-panel",
+    ".timeline-track",
+    ".overview-card",
+    ".action-panel",
+    ".workflow",
+  ];
   tokens.forEach((token) => {
     assert(css.includes(token), `样式应包含 ${token}`);
   });
@@ -302,6 +316,15 @@ function testOverallPrompt() {
   assert(prompt.includes("预测"), "整体提示词应包含预测要求");
 }
 
+function testTimelineIndex() {
+  const history = [{ date: "2026-01-02" }, { date: "2026-01-01" }];
+  const idx = buildTimelineIndex(history);
+  assert(idx.dates[0] === "2026-01-01", "日期应排序");
+  assert(idx.latestDate === "2026-01-02", "应识别最新日期");
+  assert(nearestDate(idx.dates, "2026-01-03") === "2026-01-02", "应返回最近日期");
+  const series = buildSeries(history, (item) => (item.date === "2026-01-01" ? 1 : 2));
+  assert(series.length === 2, "序列长度应匹配历史");
+}
 function run() {
   testMacroGate();
   testLeverageLiquidation();
@@ -319,6 +342,7 @@ function run() {
   testStyleTokens();
   testSummaryBuilders();
   testOverallPrompt();
+  testTimelineIndex();
   console.log("All tests passed.");
 }
 
