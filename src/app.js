@@ -32,6 +32,8 @@ const elements = {
   runStatus: document.getElementById("runStatus"),
   gateList: document.getElementById("gateList"),
   gateInspector: document.getElementById("gateInspector"),
+  gateChain: document.getElementById("gateChain"),
+  auditVisual: document.getElementById("auditVisual"),
   topReasons: document.getElementById("topReasons"),
   riskNotes: document.getElementById("riskNotes"),
   evidenceHints: document.getElementById("evidenceHints"),
@@ -65,6 +67,10 @@ const elements = {
   overviewDriversHint: document.getElementById("overviewDriversHint"),
   overviewBlocks: document.getElementById("overviewBlocks"),
   overviewBlocksHint: document.getElementById("overviewBlocksHint"),
+  statusOverview: document.getElementById("statusOverview"),
+  statusDetailA: document.getElementById("statusDetailA"),
+  statusDetailB: document.getElementById("statusDetailB"),
+  statusDetailC: document.getElementById("statusDetailC"),
   actionSummary: document.getElementById("actionSummary"),
   actionDetail: document.getElementById("actionDetail"),
   counterfactuals: document.getElementById("counterfactuals"),
@@ -470,7 +476,7 @@ function updateTimeline(history) {
   timelineIndex = buildTimelineIndex(history);
   const total = timelineIndex.dates.length;
   if (elements.timelineRange) {
-    elements.timelineRange.max = Math.max(0, total - 1);
+    elements.timelineRange.max = total === 1 ? 1 : Math.max(0, total - 1);
   }
 }
 
@@ -484,7 +490,7 @@ function renderTimeline(history, date) {
   if (elements.timelineRange && timelineIndex.dates.length) {
     const idx = timelineIndex.dates.indexOf(resolvedDate);
     const visualIndex = idx >= 0 ? idx : timelineIndex.dates.length - 1;
-    elements.timelineRange.value = visualIndex;
+    elements.timelineRange.value = timelineIndex.dates.length === 1 ? 1 : visualIndex;
   }
   if (elements.timelineLabel) {
     elements.timelineLabel.textContent = resolvedDate ? `快照 ${resolvedDate}` : "暂无快照";
@@ -766,7 +772,8 @@ if (elements.timelineRange) {
   elements.timelineRange.addEventListener("input", () => {
     const history = loadHistory();
     const idx = Number(elements.timelineRange.value || 0);
-    const date = timelineIndex.dates[idx];
+    const realIndex = Math.min(idx, Math.max(0, timelineIndex.dates.length - 1));
+    const date = timelineIndex.dates[realIndex];
     if (date) {
       renderSnapshot(history, date);
     }

@@ -6,7 +6,7 @@ import { evalSVC } from "../src/engine/rules/svc.js";
 import { evalLiquidity } from "../src/engine/rules/liquidity.js";
 import { evalDanger } from "../src/engine/rules/danger.js";
 import { runPipeline } from "../src/engine/pipeline.js";
-import { renderCoverage, renderOutput, renderTimelineOverview } from "../src/ui/render.js";
+import { renderCoverage, renderOutput, renderTimelineOverview, renderGateChain } from "../src/ui/render.js";
 import { buildActionSummary, buildHealthSummary, buildMissingImpact } from "../src/ui/summary.js";
 import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline.js";
 import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/cache.js";
@@ -284,6 +284,12 @@ function testLayoutSkeleton() {
     "historyRange",
     "historyDate",
     "historyHint",
+    "gateChain",
+    "auditVisual",
+    "statusOverview",
+    "statusDetailA",
+    "statusDetailB",
+    "statusDetailC",
   ];
   ids.forEach((id) => {
     assert(html.includes(`id=\"${id}\"`), `布局应包含 ${id}`);
@@ -369,6 +375,12 @@ function testTooltipIncludesDateAndPrice() {
   assert(text.includes("$3,456.78"), "应包含格式化价格");
 }
 
+function testGateChainHasNodes() {
+  const container = createNode();
+  renderGateChain(container, [{ id: "G0", status: "open", name: "宏观总闸门" }], "G0");
+  assert(container.innerHTML.includes("G0"), "闸门链路应渲染节点");
+}
+
 function testBuildCombinedInputPrefersPayloadMissing() {
   const payload = {
     data: { stablecoin30d: 1, mappingRatioDown: true, rsdScore: 5 },
@@ -420,6 +432,40 @@ function testTimelineRangeLatestAtRight() {
   assert(Number(timelineRange.value) === 1, "Timeline: latest should map to rightmost value");
 }
 
+function testTimelineSingleRecordRightmost() {
+  const timelineRange = createNode("input");
+  const record = { date: "2026-01-27", input: baseInput(), output: runPipeline(baseInput()) };
+  const elements = {
+    statusBadge: createNode(),
+    statusTitle: createNode(),
+    statusSub: createNode(),
+    betaValue: createNode(),
+    hedgeValue: createNode(),
+    phaseValue: createNode(),
+    confidenceValue: createNode(),
+    extremeValue: createNode(),
+    distributionValue: createNode(),
+    lastRun: createNode(),
+    gateList: createNode(),
+    gateInspector: createNode(),
+    topReasons: createNode(),
+    riskNotes: createNode(),
+    betaChart: createNode(),
+    confidenceChart: createNode(),
+    fofChart: createNode(),
+    kanbanA: createNode(),
+    kanbanB: createNode(),
+    kanbanC: createNode(),
+    timelineLabel: createNode(),
+    timelineRange,
+    timelineOverview: null,
+    timelineLegend: null,
+  };
+  renderOutput(elements, record, [record]);
+  assert(Number(timelineRange.max) === 1, "单条记录应将 max 扩展为 1");
+  assert(Number(timelineRange.value) === 1, "单条记录应显示在最右侧");
+}
+
 function testCacheTTLThirtyDays() {
   const originalNow = Date.now;
   const now = Date.now();
@@ -463,12 +509,14 @@ function run() {
   testOverallPrompt();
   testTimelineIndex();
   testTimelineRangeLatestAtRight();
+  testTimelineSingleRecordRightmost();
   testCacheTTLThirtyDays();
   testHistoryWindowDateRange();
   testTimelineIncludesEthPriceSeries();
   testEthTooltipFormat();
   testTooltipIncludesDateAndPrice();
   testBuildCombinedInputPrefersPayloadMissing();
+  testGateChainHasNodes();
   console.log("All tests passed.");
 }
 

@@ -84,7 +84,7 @@ function renderInspector(container, gate) {
   `;
 }
 
-export function renderGates(container, inspector, gates) {
+export function renderGates(container, inspector, gates, onSelect) {
   container.innerHTML = "";
   let currentGate = gates[0];
   const nodes = [];
@@ -104,15 +104,133 @@ export function renderGates(container, inspector, gates) {
       nodes.forEach((node) => node.classList.remove("active"));
       item.classList.add("active");
       renderInspector(inspector, gate);
+      if (typeof onSelect === "function") {
+        onSelect(gate);
+      }
     });
     container.appendChild(item);
     nodes.push(item);
   });
   if (nodes[0]) nodes[0].classList.add("active");
   renderInspector(inspector, currentGate);
+  if (typeof onSelect === "function") {
+    onSelect(currentGate);
+  }
 }
 
-export function renderReasons(listContainer, notesContainer, reasons, notes, gateMap, gateList, inspector) {
+export function renderGateChain(container, gates, selectedId, onSelect) {
+  if (!container) return;
+  if (!gates || !gates.length) {
+    container.innerHTML = '<div class="inspector-empty">暂无闸门链路</div>';
+    return;
+  }
+  const width = 520;
+  const height = 200;
+  const padding = 24;
+  const gap = (width - padding * 2) / Math.max(gates.length - 1, 1);
+  const nodeY = height / 2;
+  const colors = {
+    open: "#59d48f",
+    warn: "#f3a545",
+    closed: "#e35654",
+  };
+  const nodes = gates
+    .map((gate, idx) => {
+      const x = padding + idx * gap;
+      const color = colors[gate.status] || "#9aa4b2";
+      const active = gate.id === selectedId;
+      return `
+        <g data-gate="${gate.id}">
+          <circle cx="${x}" cy="${nodeY}" r="${active ? 12 : 10}" fill="${color}" />
+          <text x="${x}" y="${nodeY - 18}" text-anchor="middle" fill="#cfd6e4" font-size="10">${gate.id}</text>
+          <text x="${x}" y="${nodeY + 26}" text-anchor="middle" fill="#8892a6" font-size="9">${gate.name}</text>
+        </g>
+      `;
+    })
+    .join("");
+  const links = gates
+    .map((_gate, idx) => {
+      if (idx === 0) return "";
+      const x1 = padding + (idx - 1) * gap;
+      const x2 = padding + idx * gap;
+      return `<line x1="${x1}" y1="${nodeY}" x2="${x2}" y2="${nodeY}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 6" />`;
+    })
+    .join("");
+  container.innerHTML = `
+    <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+      ${links}
+      ${nodes}
+    </svg>
+  `;
+  if (typeof onSelect === "function") {
+    const svg = container.querySelector("svg");
+    svg?.querySelectorAll("g[data-gate]").forEach((node) => {
+      node.addEventListener("click", () => {
+        const gateId = node.getAttribute("data-gate");
+        const gate = gates.find((item) => item.id === gateId);
+        if (gate) {
+          onSelect(gate);
+        }
+      });
+    });
+  }
+}
+
+export function renderAuditVisual(container, gate) {
+  if (!container) return;
+  if (!gate) {
+    container.innerHTML = '<div class="inspector-empty">暂无审计信息</div>';
+    return;
+  }
+  const details = gate.details || {};
+  const inputs = details.inputs || {};
+  const sources = details.sources || {};
+  const calc = details.calc || {};
+  const rules = details.rules || [];
+  const inputRows = Object.entries(inputs)
+    .map(([key, value]) => {
+      const source = sources[key] || "来源缺失";
+      const label = key;
+      const display = typeof value === "number" ? value.toFixed(3) : String(value);
+      return `
+        <div class="audit-row">
+          <div class="audit-key">${label}</div>
+          <div class="audit-bar">
+            <span style="width:${Math.min(100, Math.abs(Number(value) || 0) * 10)}%"></span>
+          </div>
+          <div class="audit-value">${display}</div>
+          <div class="audit-source">${source}</div>
+        </div>
+      `;
+    })
+    .join("");
+  const ruleChips = rules.length
+    ? rules.map((rule) => `<span class="audit-chip hit">${rule}</span>`).join("")
+    : '<span class="audit-chip">无命中规则</span>';
+  const calcRows = Object.entries(calc)
+    .map(([key, value]) => {
+      const display = typeof value === "number" ? value.toFixed(3) : String(value);
+      return `<div class="audit-kv"><span>${key}</span><strong>${display}</strong></div>`;
+    })
+    .join("");
+  container.innerHTML = `
+    <div class="audit-head">${gate.id} · ${gate.name}</div>
+    <div class="audit-section">
+      <div class="audit-title">输入与来源</div>
+      <div class="audit-list">${inputRows || '<div class="inspector-empty">无输入</div>'}</div>
+    </div>
+    <div class="audit-section">
+      <div class="audit-title">规则命中</div>
+      <div class="audit-chips">${ruleChips}</div>
+    </div>
+    <div class="audit-section">
+      <div class="audit-title">计算</div>
+      <div class="audit-kv-list">${calcRows || '<div class="inspector-empty">无计算</div>'}</div>
+    </div>
+  `;
+}
+
+export function renderReasons(listContainer, notesContainer, reasons, notes, gateMap, gateList, inspector, onSelect) {
   listContainer.innerHTML = "";
   reasons.forEach((item) => {
     const li = document.createElement("li");
@@ -132,6 +250,9 @@ export function renderReasons(listContainer, notesContainer, reasons, notes, gat
         const gateNode = gateList.querySelector(`[data-gate-id="${item.dataset.gateId}"]`);
         gateNode?.scrollIntoView({ behavior: "smooth", block: "center" });
         renderInspector(inspector, gate);
+        if (typeof onSelect === "function") {
+          onSelect(gate);
+        }
       }
     });
   });
@@ -392,14 +513,39 @@ export function renderOutput(elements, record, history) {
   elements.distributionValue.textContent = `${output.distributionGate} / 30D`;
   elements.lastRun.textContent = record.date;
 
+  if (elements.statusOverview) {
+    const stateIndex = state === "A" ? 0 : state === "B" ? 1 : 2;
+    elements.statusOverview.innerHTML = `
+      <div class="status-overview-bar">
+        <span class="slot ${stateIndex === 0 ? "active" : ""}">A</span>
+        <span class="slot ${stateIndex === 1 ? "active" : ""}">B</span>
+        <span class="slot ${stateIndex === 2 ? "active" : ""}">C</span>
+      </div>
+    `;
+  }
+  const detailA = elements.statusDetailA;
+  const detailB = elements.statusDetailB;
+  const detailC = elements.statusDetailC;
+  if (detailA && detailB && detailC) {
+    [detailA, detailB, detailC].forEach((node) => node.classList.remove("active"));
+    const current = state === "A" ? detailA : state === "B" ? detailB : detailC;
+    current.classList.add("active");
+    current.innerHTML = `
+      <div class="detail-title">当前状态要点</div>
+      <div class="detail-row"><span>建议动作</span><strong>${action.action}</strong></div>
+      <div class="detail-row"><span>核心驱动</span><strong>${action.drivers.join(" / ") || "—"}</strong></div>
+      <div class="detail-row"><span>风险阻断</span><strong>${action.blocks.join(" / ") || "无"}</strong></div>
+    `;
+  }
+
   if (elements.timelineLabel && history.length) {
     const sortedDates = [...history].sort((a, b) => a.date.localeCompare(b.date)).map((item) => item.date);
     const idx = sortedDates.indexOf(record.date);
     const safeIndex = idx >= 0 ? idx : sortedDates.length - 1;
     elements.timelineLabel.textContent = `快照 ${record.date} · ${safeIndex + 1}/${sortedDates.length}`;
     if (elements.timelineRange) {
-      elements.timelineRange.max = Math.max(0, sortedDates.length - 1);
-      elements.timelineRange.value = safeIndex;
+      elements.timelineRange.max = sortedDates.length === 1 ? 1 : Math.max(0, sortedDates.length - 1);
+      elements.timelineRange.value = sortedDates.length === 1 ? 1 : safeIndex;
     }
     if (elements.timelineOverview) {
       renderTimelineOverview(elements.timelineOverview, elements.timelineLegend, history, record.date);
@@ -435,7 +581,10 @@ export function renderOutput(elements, record, history) {
     elements.missingImpact.innerHTML = buildMissingImpact(record.input).map((item) => `<div>${item}</div>`).join("");
 
   renderKanban(elements, state, output);
-  renderGates(elements.gateList, elements.gateInspector, output.gates);
+  renderGates(elements.gateList, elements.gateInspector, output.gates, (gate) => {
+    renderGateChain(elements.gateChain, output.gates, gate.id);
+    renderAuditVisual(elements.auditVisual, gate);
+  });
   const gateMap = new Map(output.gates.map((gate) => [gate.id, gate]));
   renderReasons(
     elements.topReasons,
@@ -444,8 +593,42 @@ export function renderOutput(elements, record, history) {
     output.riskNotes,
     gateMap,
     elements.gateList,
-    elements.gateInspector
+    elements.gateInspector,
+    (gate) => {
+      renderGateChain(elements.gateChain, output.gates, gate.id);
+      renderAuditVisual(elements.auditVisual, gate);
+    }
   );
+  renderGateChain(elements.gateChain, output.gates, output.gates[0]?.id, (gate) => {
+    const gateNode = elements.gateList?.querySelector(`[data-gate-id="${gate.id}"]`);
+    gateNode?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (gateNode) {
+      elements.gateList?.querySelectorAll(".gate-item")?.forEach((node) => node.classList.remove("active"));
+      gateNode.classList.add("active");
+    }
+    renderAuditVisual(elements.auditVisual, gate);
+    if (elements.gateInspector) {
+      const details = gate.details || {};
+      const steps = details.steps && details.steps.length ? details.steps : ["读取输入", "计算阈值/得分", "应用规则"];
+      const rules = details.rules && details.rules.length ? details.rules.join(" / ") : "无";
+      elements.gateInspector.innerHTML = `
+        <div class="inspector-title">${gate.id} · ${gate.name}</div>
+        <div class="inspector-grid">
+          ${renderKeyValueBlock("输入", details.inputs)}
+          ${renderKeyValueBlock("来源", details.sources)}
+          ${renderKeyValueBlock("计算", details.calc)}
+          <div class="inspector-block">
+            <h4>步骤</h4>
+            ${steps.map((step) => `<div>${step}</div>`).join("")}
+          </div>
+          <div class="inspector-block">
+            <h4>规则命中</h4>
+            <div>${rules}</div>
+          </div>
+        </div>
+      `;
+    }
+  });
   if (elements.evidenceHints) {
     const hints = buildEvidenceHints(output);
     elements.evidenceHints.innerHTML = hints.map((item) => `<div>${item}</div>`).join("");
