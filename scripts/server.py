@@ -2,6 +2,9 @@
 import json
 import os
 import re
+import subprocess
+import tempfile
+import sys
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from urllib import request
 from urllib.error import URLError, HTTPError
@@ -101,6 +104,38 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if self.path == "/data/history":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                self._send_json({"error": "invalid json"}, status=400)
+                return
+            date = (payload.get("date") or "").strip()
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                self._send_json({"error": "invalid date"}, status=400)
+                return
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as fp:
+                    output_path = fp.name
+                script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "collector.py"))
+                cmd = [sys.executable, script_path, "--date", date, "--output", output_path]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    self._send_json({"error": "collector failed", "detail": result.stderr.strip()}, status=502)
+                    return
+                with open(output_path, "r", encoding="utf-8") as fp:
+                    data = json.load(fp)
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+                self._send_json(data)
+                return
+            except Exception as exc:
+                self._send_json({"error": f"collector error: {exc}"}, status=502)
+                return
         if self.path not in ("/ai/summary", "/ai/gate", "/ai/overall"):
             self.send_response(404)
             self.end_headers()

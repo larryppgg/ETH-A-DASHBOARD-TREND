@@ -51,12 +51,21 @@
       <section class="panel timeline-panel">
         <div class="panel-title">时间轴总览</div>
         <div class="timeline-overview" id="timelineOverview"></div>
+        <div class="timeline-tooltip" id="timelineTooltip">--</div>
         <div class="timeline-legend" id="timelineLegend"></div>
         <div class="timeline-track">
           <input type="range" id="timelineRange" min="0" max="0" value="0" />
           <div class="timeline-meta">
             <div class="timeline-label" id="timelineLabel">--</div>
             <button class="ghost" id="timelineLatestBtn">返回最新</button>
+          </div>
+        </div>
+        <div class="history-track">
+          <div class="history-title">历史日期轴（365天）</div>
+          <input type="range" id="historyRange" min="0" max="0" value="0" />
+          <div class="history-meta">
+            <input type="date" id="historyDate" />
+            <div class="history-hint" id="historyHint">选择日期将自动抓取并回放</div>
           </div>
         </div>
       </section>

@@ -6,9 +6,13 @@ import { evalSVC } from "../src/engine/rules/svc.js";
 import { evalLiquidity } from "../src/engine/rules/liquidity.js";
 import { evalDanger } from "../src/engine/rules/danger.js";
 import { runPipeline } from "../src/engine/pipeline.js";
-import { renderCoverage, renderOutput } from "../src/ui/render.js";
+import { renderCoverage, renderOutput, renderTimelineOverview } from "../src/ui/render.js";
 import { buildActionSummary, buildHealthSummary, buildMissingImpact } from "../src/ui/summary.js";
 import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline.js";
+import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/cache.js";
+import { buildDateWindow } from "../src/ui/historyWindow.js";
+import { formatUsd, buildTooltipText } from "../src/ui/formatters.js";
+import { buildCombinedInput } from "../src/ui/inputBuilder.js";
 import { buildOverallPrompt } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
 import { shouldAutoRun } from "../src/autoRun.js";
@@ -277,6 +281,9 @@ function testLayoutSkeleton() {
     "workflowValidate",
     "workflowRun",
     "workflowReplay",
+    "historyRange",
+    "historyDate",
+    "historyHint",
   ];
   ids.forEach((id) => {
     assert(html.includes(`id=\"${id}\"`), `布局应包含 ${id}`);
@@ -325,6 +332,118 @@ function testTimelineIndex() {
   const series = buildSeries(history, (item) => (item.date === "2026-01-01" ? 1 : 2));
   assert(series.length === 2, "序列长度应匹配历史");
 }
+
+function testHistoryWindowDateRange() {
+  const now = new Date("2026-01-28T00:00:00Z");
+  const { dates, latest } = buildDateWindow(now, 365);
+  assert(dates.length === 365, "历史窗口应为 365 天");
+  assert(latest === "2026-01-28", "窗口最新日期应为 today");
+  assert(dates[0] === "2025-01-29", "窗口最早日期应为 today-364");
+}
+
+function testTimelineIncludesEthPriceSeries() {
+  const container = createNode();
+  const legend = createNode();
+  const history = [
+    {
+      date: "2026-01-01",
+      input: { ethSpotPrice: 2000 },
+      output: { beta: 0.3, confidence: 0.4, fofScore: 60, state: "B", extremeAllowed: false, distributionGate: 0, riskNotes: [] },
+    },
+  ];
+  renderTimelineOverview(container, legend, history, "2026-01-01");
+  assert(legend.innerHTML.includes("ETH 现货"), "时间轴图例应包含 ETH 现货");
+}
+
+function testEthTooltipFormat() {
+  assert(formatUsd(3456.78) === "$3,456.78", "USD 格式应带千分位与两位小数");
+}
+
+function testTooltipIncludesDateAndPrice() {
+  const record = {
+    date: "2026-01-01",
+    input: { ethSpotPrice: 3456.78 },
+  };
+  const text = buildTooltipText(record);
+  assert(text.includes("2026-01-01"), "应包含日期");
+  assert(text.includes("$3,456.78"), "应包含格式化价格");
+}
+
+function testBuildCombinedInputPrefersPayloadMissing() {
+  const payload = {
+    data: { stablecoin30d: 1, mappingRatioDown: true, rsdScore: 5 },
+    sources: {},
+    missing: [],
+    errors: [],
+    generatedAt: "2026-01-30T00:00:00Z",
+  };
+  const template = { stablecoin30d: null, mappingRatioDown: null, rsdScore: null };
+  const combined = buildCombinedInput(payload, template);
+  assert(combined.stablecoin30d === 1, "应合并 payload 数据");
+  assert(Array.isArray(combined.__missing) && combined.__missing.length === 0, "应使用 payload.missing");
+}
+
+function testTimelineRangeLatestAtRight() {
+  const timelineRange = createNode("input");
+  timelineRange.value = "0";
+  timelineRange.max = "0";
+  const recordA = { date: "2026-01-26", input: baseInput(), output: runPipeline(baseInput()) };
+  const recordB = { date: "2026-01-27", input: baseInput(), output: runPipeline(baseInput()) };
+  const elements = {
+    statusBadge: createNode(),
+    statusTitle: createNode(),
+    statusSub: createNode(),
+    betaValue: createNode(),
+    hedgeValue: createNode(),
+    phaseValue: createNode(),
+    confidenceValue: createNode(),
+    extremeValue: createNode(),
+    distributionValue: createNode(),
+    lastRun: createNode(),
+    gateList: createNode(),
+    gateInspector: createNode(),
+    topReasons: createNode(),
+    riskNotes: createNode(),
+    betaChart: createNode(),
+    confidenceChart: createNode(),
+    fofChart: createNode(),
+    kanbanA: createNode(),
+    kanbanB: createNode(),
+    kanbanC: createNode(),
+    timelineLabel: createNode(),
+    timelineRange,
+    timelineOverview: null,
+    timelineLegend: null,
+  };
+  renderOutput(elements, recordB, [recordA, recordB]);
+  assert(Number(timelineRange.max) === 1, "Timeline: max should be latest index");
+  assert(Number(timelineRange.value) === 1, "Timeline: latest should map to rightmost value");
+}
+
+function testCacheTTLThirtyDays() {
+  const originalNow = Date.now;
+  const now = Date.now();
+  let store = {};
+  global.localStorage = {
+    getItem(key) {
+      return store[key] ?? null;
+    },
+    setItem(key, value) {
+      store[key] = value;
+    },
+    removeItem(key) {
+      delete store[key];
+    },
+  };
+  const history = [{ date: "2026-01-27" }];
+  Date.now = () => now;
+  cacheHistory(history);
+  Date.now = () => now + 1000 * 60 * 60 * 24 * 31;
+  const loaded = loadCachedHistory();
+  resetCachedHistory();
+  Date.now = originalNow;
+  assert(loaded === null, "Cache TTL should expire after 30 days");
+}
 function run() {
   testMacroGate();
   testLeverageLiquidation();
@@ -343,6 +462,13 @@ function run() {
   testSummaryBuilders();
   testOverallPrompt();
   testTimelineIndex();
+  testTimelineRangeLatestAtRight();
+  testCacheTTLThirtyDays();
+  testHistoryWindowDateRange();
+  testTimelineIncludesEthPriceSeries();
+  testEthTooltipFormat();
+  testTooltipIncludesDateAndPrice();
+  testBuildCombinedInputPrefersPayloadMissing();
   console.log("All tests passed.");
 }
 

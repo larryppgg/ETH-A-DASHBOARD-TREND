@@ -5,7 +5,11 @@ import { buildAiPayload } from "./ai/payload.js";
 import { renderAiPanel, renderAiStatus } from "./ui/ai.js";
 import { shouldAutoRun } from "./autoRun.js";
 import { needsAutoFetch } from "./inputPolicy.js";
+import { cacheHistory, loadCachedHistory, resetCachedHistory } from "./ui/cache.js";
 import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline.js";
+import { buildDateWindow } from "./ui/historyWindow.js";
+import { buildTooltipText } from "./ui/formatters.js";
+import { buildCombinedInput } from "./ui/inputBuilder.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
 const inputKey = "eth_a_dashboard_custom_input";
@@ -74,6 +78,10 @@ const elements = {
   timelineRange: document.getElementById("timelineRange"),
   timelineLabel: document.getElementById("timelineLabel"),
   timelineLatestBtn: document.getElementById("timelineLatestBtn"),
+  timelineTooltip: document.getElementById("timelineTooltip"),
+  historyRange: document.getElementById("historyRange"),
+  historyDate: document.getElementById("historyDate"),
+  historyHint: document.getElementById("historyHint"),
 };
 
 const inputSchema = {
@@ -137,6 +145,7 @@ function loadHistory() {
 
 function saveHistory(history) {
   localStorage.setItem(storageKey, JSON.stringify(history));
+  cacheHistory(history);
 }
 
 function loadCustomInput() {
@@ -427,6 +436,35 @@ function showRunStatus(text) {
 
 let selectedDate = null;
 let timelineIndex = buildTimelineIndex([]);
+let historyWindow = buildDateWindow(new Date(), 365);
+
+function setHistoryHint(text) {
+  if (!elements.historyHint) return;
+  elements.historyHint.textContent = text || "";
+}
+
+function syncHistoryWindow() {
+  historyWindow = buildDateWindow(new Date(), 365);
+  if (elements.historyRange) {
+    elements.historyRange.max = Math.max(0, historyWindow.dates.length - 1);
+    elements.historyRange.value = Math.max(0, historyWindow.dates.length - 1);
+  }
+  if (elements.historyDate) {
+    elements.historyDate.value = historyWindow.latest || "";
+  }
+}
+
+function syncHistorySelection(date) {
+  if (!date || !historyWindow?.dates?.length) return;
+  const idx = historyWindow.dates.indexOf(date);
+  if (idx < 0) return;
+  if (elements.historyRange) {
+    elements.historyRange.value = idx;
+  }
+  if (elements.historyDate) {
+    elements.historyDate.value = date;
+  }
+}
 
 function updateTimeline(history) {
   timelineIndex = buildTimelineIndex(history);
@@ -445,7 +483,8 @@ function renderTimeline(history, date) {
   selectedDate = resolvedDate;
   if (elements.timelineRange && timelineIndex.dates.length) {
     const idx = timelineIndex.dates.indexOf(resolvedDate);
-    elements.timelineRange.value = idx >= 0 ? idx : timelineIndex.dates.length - 1;
+    const visualIndex = idx >= 0 ? idx : timelineIndex.dates.length - 1;
+    elements.timelineRange.value = visualIndex;
   }
   if (elements.timelineLabel) {
     elements.timelineLabel.textContent = resolvedDate ? `快照 ${resolvedDate}` : "暂无快照";
@@ -465,9 +504,11 @@ function renderSnapshot(history, date) {
     if (elements.runDate) {
       elements.runDate.value = record.date;
     }
+    syncHistorySelection(record.date);
   } else if (history.length) {
     const fallback = history[history.length - 1];
     renderOutput(elements, fallback, history);
+    syncHistorySelection(fallback.date);
   }
 }
 
@@ -493,7 +534,7 @@ async function runToday(options = {}) {
         setWorkflowStatus(elements.workflowFetch, "失败");
         return;
       }
-      customInput = loadCustomInput();
+      customInput = fetched;
       setWorkflowStatus(elements.workflowFetch, "完成");
     } else if (needsAutoFetch(customInput, Object.keys(inputSchema))) {
       showRunStatus("输入不完整，请先补齐或使用自动抓取。");
@@ -545,8 +586,11 @@ async function runToday(options = {}) {
 
 function clearHistory() {
   localStorage.removeItem(storageKey);
+  resetCachedHistory();
   showError([]);
   renderTimeline([], null);
+  syncHistoryWindow();
+  setHistoryHint("");
 }
 
 function applyCustomInput() {
@@ -579,15 +623,8 @@ async function autoFetch() {
       throw new Error("本地抓取数据不存在，请先运行 npm run fetch");
     }
     const payload = await response.json();
-    const combined = {
-      ...templateInput,
-      ...payload.data,
-      __sources: payload.sources,
-      __missing: payload.missing || [],
-      __errors: payload.errors || [],
-      __generatedAt: payload.generatedAt,
-      __proxyTrace: payload.proxyTrace,
-    };
+    const combined = buildCombinedInput(payload, templateInput);
+    combined.__proxyTrace = payload.proxyTrace;
     elements.inputJson.value = JSON.stringify(combined, null, 2);
     saveCustomInput(combined);
     const missing = listMissingFields(combined).filter((key) => key !== "__sources");
@@ -615,13 +652,64 @@ async function autoFetch() {
       }`
     );
     setWorkflowStatus(elements.workflowFetch, "完成");
-    return true;
+    return combined;
   } catch (error) {
     showError([error.message || "自动抓取失败"]);
     showSourceStatus("");
     setWorkflowStatus(elements.workflowFetch, "失败");
-    return false;
+    return null;
   }
+}
+
+async function fetchHistoryDate(targetDate) {
+  try {
+    const response = await fetch("/data/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: targetDate }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || "历史抓取失败");
+    }
+    return await response.json();
+  } catch (error) {
+    showError([error.message || "历史抓取失败"]);
+    return null;
+  }
+}
+
+async function selectHistoryDate(date) {
+  if (!date) return;
+  const history = loadHistory();
+  const existing = history.find((item) => item.date === date);
+  if (existing) {
+    renderSnapshot(history, date);
+    setHistoryHint("已载入本地快照");
+    return;
+  }
+  setHistoryHint("抓取中...");
+  const payload = await fetchHistoryDate(date);
+  if (!payload) {
+    setHistoryHint("抓取失败");
+    return;
+  }
+  const combined = buildCombinedInput(payload, templateInput);
+  const normalized = normalizeInputForRun({ ...combined, date }, history);
+  const errors = validateInput(normalized);
+  if (errors.length) {
+    showError(errors);
+    setHistoryHint("数据不完整，无法回放");
+    return;
+  }
+  const output = runPipeline(normalized);
+  const record = { date, input: normalized, output };
+  const updated = history.filter((item) => item.date !== date);
+  updated.push(record);
+  saveHistory(updated);
+  renderSnapshot(updated, date);
+  runAi(record);
+  setHistoryHint("已抓取并写入历史");
 }
 
 function exportJson(history) {
@@ -690,10 +778,100 @@ if (elements.timelineLatestBtn) {
     renderSnapshot(history, timelineIndex.latestDate);
   });
 }
+if (elements.historyRange) {
+  elements.historyRange.addEventListener("input", () => {
+    const idx = Number(elements.historyRange.value || 0);
+    const date = historyWindow.dates[idx];
+    if (elements.historyDate) {
+      elements.historyDate.value = date || "";
+    }
+    if (!date) return;
+    const history = loadHistory();
+    const existing = history.find((item) => item.date === date);
+    if (existing) {
+      renderSnapshot(history, date);
+      setHistoryHint("已载入本地快照");
+    } else {
+      setHistoryHint("松开滑块将触发历史抓取");
+    }
+  });
+  elements.historyRange.addEventListener("change", () => {
+    const idx = Number(elements.historyRange.value || 0);
+    const date = historyWindow.dates[idx];
+    if (date) {
+      selectHistoryDate(date);
+    }
+  });
+}
+if (elements.historyDate) {
+  elements.historyDate.addEventListener("change", () => {
+    const date = elements.historyDate.value;
+    const idx = historyWindow.dates.indexOf(date);
+    if (idx < 0) {
+      setHistoryHint("日期超出 365 天窗口");
+      return;
+    }
+    if (elements.historyRange) {
+      elements.historyRange.value = idx;
+    }
+    selectHistoryDate(date);
+  });
+}
+if (elements.timelineOverview) {
+  elements.timelineOverview.addEventListener("click", (event) => {
+    const history = loadHistory();
+    if (!history.length) return;
+    const rect = elements.timelineOverview.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const idx = Math.round(ratio * (timelineIndex.dates.length - 1));
+    const date = timelineIndex.dates[idx];
+    if (date) {
+      renderSnapshot(history, date);
+    }
+  });
+  elements.timelineOverview.addEventListener("wheel", (event) => {
+    const history = loadHistory();
+    if (!history.length) return;
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -1 : 1;
+    const currentIdx = timelineIndex.dates.indexOf(selectedDate);
+    const nextIdx = Math.min(
+      timelineIndex.dates.length - 1,
+      Math.max(0, currentIdx + direction)
+    );
+    const date = timelineIndex.dates[nextIdx];
+    if (date) {
+      renderSnapshot(history, date);
+    }
+  }, { passive: false });
+  elements.timelineOverview.addEventListener("mousemove", (event) => {
+    if (!elements.timelineTooltip) return;
+    const history = loadHistory();
+    if (!history.length) return;
+    const rect = elements.timelineOverview.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const idx = Math.round(ratio * (timelineIndex.dates.length - 1));
+    const date = timelineIndex.dates[idx];
+    const record = pickRecordByDate(history, date);
+    const panel = elements.timelineOverview.closest(".timeline-panel");
+    if (!record || !panel) return;
+    const panelRect = panel.getBoundingClientRect();
+    elements.timelineTooltip.textContent = buildTooltipText(record);
+    elements.timelineTooltip.style.left = `${event.clientX - panelRect.left}px`;
+    elements.timelineTooltip.style.top = `${rect.top - panelRect.top + 6}px`;
+    elements.timelineTooltip.style.opacity = "1";
+  });
+  elements.timelineOverview.addEventListener("mouseleave", () => {
+    if (!elements.timelineTooltip) return;
+    elements.timelineTooltip.style.opacity = "0";
+  });
+}
 window.__runToday__ = () => runToday({ mode: "auto" });
 window.__autoFetch__ = autoFetch;
 
-const history = loadHistory();
+syncHistoryWindow();
+
+const history = loadHistory().length ? loadHistory() : (loadCachedHistory() || []);
 if (history.length) {
   renderSnapshot(history, null);
 } else {

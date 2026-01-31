@@ -108,5 +108,32 @@ class TestCollectorFetchJson(unittest.TestCase):
                                         collector.main()
         self.assertTrue(captured.get("errors"), "errors 列表应记录异常")
 
+    def test_index_for_date(self):
+        series = [
+            {"date": "2026-01-05", "value": 1},
+            {"date": "2026-01-04", "value": 2},
+            {"date": "2026-01-02", "value": 3},
+        ]
+        idx = collector.index_for_date(series, "2026-01-03")
+        self.assertEqual(idx, 2, "目标日期应落在最近的历史日期")
+
+    def test_eth_spot_price_present(self):
+        payload = {
+            "market_data": {
+                "current_price": {"usd": 2100},
+                "market_cap": {"usd": 300000000000},
+                "total_volume": {"usd": 20000000000},
+                "market_cap_change_percentage_24h": 1.2,
+                "circulating_supply": 120000000,
+                "total_supply": 120000000,
+                "price_change_percentage_7d": 2,
+                "price_change_percentage_24h": 1,
+            }
+        }
+        with patch("scripts.collector.fetch_json", return_value=payload):
+            data, sources, missing = collector.fetch_coingecko_market()
+        self.assertIn("ethSpotPrice", data, "应返回 ETH 现货价格")
+        self.assertEqual(data.get("ethSpotPrice"), 2100)
+
 if __name__ == "__main__":
     unittest.main()

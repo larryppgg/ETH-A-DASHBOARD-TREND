@@ -219,7 +219,7 @@ def curl_probe(url, proxy=None, timeout=6):
     return result.stdout.strip(), ""
 
 
-def fred_series_csv(series_id, limit=10):
+def fred_series_csv(series_id, limit=10, target_date=None):
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
         text = fetch_text(url)
@@ -238,21 +238,27 @@ def fred_series_csv(series_id, limit=10):
             continue
     if not rows:
         return []
+    if target_date:
+        target = parse_iso_date(target_date)
+        if target:
+            rows = [item for item in rows if parse_iso_date(item.get("date")) and parse_iso_date(item.get("date")) <= target]
     return list(reversed(rows[-limit:]))
 
 
-def fred_series(series_id, limit=10):
+def fred_series(series_id, limit=10, target_date=None):
     url = (
         "https://api.stlouisfed.org/fred/series/observations"
         f"?series_id={series_id}&api_key={FRED_KEY}&file_type=json&sort_order=desc&limit={limit}"
     )
+    if target_date:
+        url = f"{url}&observation_end={target_date}"
     try:
         data = fetch_json(url)
     except RuntimeError:
-        return fred_series_csv(series_id, limit)
+        return fred_series_csv(series_id, limit, target_date)
     observations = data.get("observations") if isinstance(data, dict) else None
     if not observations:
-        return fred_series_csv(series_id, limit)
+        return fred_series_csv(series_id, limit, target_date)
     return [
         {"date": item["date"], "value": float(item["value"])}
         for item in observations
@@ -281,16 +287,101 @@ def delta(values, offset=5):
     return values[0]["value"] - values[offset]["value"]
 
 
-def fetch_macro():
+def parse_iso_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def index_for_date(series, target_date):
+    if not series:
+        return 0
+    if not target_date:
+        return 0
+    target = parse_iso_date(target_date)
+    if not target:
+        return 0
+    for idx, item in enumerate(series):
+        item_date = parse_iso_date(item.get("date"))
+        if item_date and item_date <= target:
+            return idx
+    return max(len(series) - 1, 0)
+
+
+def date_key_from_ts(ts_value):
+    try:
+        return datetime.fromtimestamp(float(ts_value), timezone.utc).date().isoformat()
+    except Exception:
+        return None
+
+
+def normalize_farside_date(value):
+    if not value:
+        return None
+    raw = value.strip()
+    if re.match(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw[:10]
+    raw = raw.split()[0] + " " + raw.split()[1] + " " + raw.split()[2] if len(raw.split()) >= 3 else raw
+    for fmt in ("%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def pick_series_window(series, target_date, length):
+    if not series:
+        return []
+    idx = index_for_date(series, target_date)
+    return series[idx : idx + length]
+
+
+def pick_series_value(series, target_date):
+    if not series:
+        return None
+    idx = index_for_date(series, target_date)
+    if idx >= len(series):
+        return None
+    return series[idx].get("value")
+
+
+def build_chart_series(series):
+    points = []
+    for item in series or []:
+        if len(item) < 2:
+            continue
+        date_key = date_key_from_ts(item[0] / 1000)
+        if not date_key:
+            continue
+        points.append({"date": date_key, "value": float(item[1])})
+    points.sort(key=lambda item: item["date"], reverse=True)
+    return points
+
+
+def chart_value_at_date(series, target_date):
+    points = build_chart_series(series)
+    if not points:
+        return None, None
+    idx = index_for_date(points, target_date)
+    current = points[idx]["value"] if idx < len(points) else None
+    prev = points[idx + 1]["value"] if idx + 1 < len(points) else None
+    return current, prev
+
+
+def fetch_macro(target_date=None):
     missing = []
-    dxy = fred_series("DTWEXBGS", 7)
-    dgs2 = fred_series("DGS2", 7)
-    nfci = fred_series("NFCI", 6)
-    rrp = fred_series("RRPONTSYD", 7)
-    tga = fred_series("WTREGEN", 7)
-    srf = fred_series("SRFTRD", 7)
-    ism = fred_series("NAPM", 3)
-    dff = fred_series("DFF", 7)
+    dxy = fred_series("DTWEXBGS", 7, target_date)
+    dgs2 = fred_series("DGS2", 7, target_date)
+    nfci = fred_series("NFCI", 6, target_date)
+    rrp = fred_series("RRPONTSYD", 7, target_date)
+    tga = fred_series("WTREGEN", 7, target_date)
+    srf = fred_series("SRFTRD", 7, target_date)
+    ism = fred_series("NAPM", 3, target_date)
+    dff = fred_series("DFF", 7, target_date)
     if not dxy:
         missing.append("dxy5d")
         missing.append("dxy3dUp")
@@ -361,13 +452,26 @@ def fetch_macro():
     return data, sources, missing
 
 
-def fetch_defillama():
+def fetch_defillama(target_date=None):
     data = fetch_json("https://stablecoins.llama.fi/stablecoincharts/all")
     if not isinstance(data, list) or not data:
         return ({}, {}, ["stablecoin30d"])
-    points = data[-35:]
-    latest = points[-1]["totalCirculatingUSD"]["peggedUSD"] if points else 0
-    prior = points[0]["totalCirculatingUSD"]["peggedUSD"] if points else latest
+    points = [
+        {
+            "date": date_key_from_ts(item.get("date")),
+            "value": (item.get("totalCirculatingUSD") or {}).get("peggedUSD", 0),
+        }
+        for item in data
+        if item.get("date")
+    ]
+    points = [item for item in points if item.get("date") is not None]
+    points.sort(key=lambda item: item["date"], reverse=True)
+    if not points:
+        return ({}, {}, ["stablecoin30d"])
+    idx = index_for_date(points, target_date) if target_date else 0
+    latest = points[idx]["value"]
+    prior_idx = idx + 30 if idx + 30 < len(points) else min(len(points) - 1, idx)
+    prior = points[prior_idx]["value"]
     stablecoin30d = percent_change(latest, prior)
     return (
         {"stablecoin30d": stablecoin30d, "totalStableNow": latest, "totalStableAgo": prior},
@@ -376,13 +480,26 @@ def fetch_defillama():
     )
 
 
-def fetch_stablecoin_eth():
+def fetch_stablecoin_eth(target_date=None):
     data = fetch_json("https://stablecoins.llama.fi/stablecoincharts/ethereum")
     if not isinstance(data, list) or not data:
         return ({}, {}, ["mappingRatioDown"])
-    points = data[-35:] if isinstance(data, list) else []
-    latest = points[-1]["totalCirculatingUSD"]["peggedUSD"] if points else 0
-    prior = points[0]["totalCirculatingUSD"]["peggedUSD"] if points else latest
+    points = [
+        {
+            "date": date_key_from_ts(item.get("date")),
+            "value": (item.get("totalCirculatingUSD") or {}).get("peggedUSD", 0),
+        }
+        for item in data
+        if item.get("date")
+    ]
+    points = [item for item in points if item.get("date") is not None]
+    points.sort(key=lambda item: item["date"], reverse=True)
+    if not points:
+        return ({}, {}, ["mappingRatioDown"])
+    idx = index_for_date(points, target_date) if target_date else 0
+    latest = points[idx]["value"]
+    prior_idx = idx + 30 if idx + 30 < len(points) else min(len(points) - 1, idx)
+    prior = points[prior_idx]["value"]
     return (
         {"ethStableNow": latest, "ethStableAgo": prior},
         {
@@ -496,7 +613,7 @@ def fetch_farside_source(url, label):
     return [], None, errors
 
 
-def fetch_farside():
+def fetch_farside(target_date=None):
     urls = [
         ("https://farside.co.uk/ethereum-etf-flow/", "Farside: ethereum-etf-flow"),
         ("https://farside.co.uk/bitcoin-etf-flow/", "Farside: bitcoin-etf-flow"),
@@ -509,15 +626,32 @@ def fetch_farside():
         errors.extend(extra_errors)
         if parsed:
             break
-    etf1d = parsed[0]["total"] if parsed else 0
-    etf5d = sum(item["total"] for item in parsed[:5])
-    etf10d = sum(item["total"] for item in parsed[:10])
+    series = []
+    for item in parsed:
+        date_key = normalize_farside_date(item.get("date"))
+        if not date_key:
+            continue
+        series.append({"date": date_key, "total": item.get("total", 0)})
+    series.sort(key=lambda item: item["date"], reverse=True)
+    if target_date and series:
+        idx = index_for_date(series, target_date)
+        window = series[idx : idx + 10]
+        etf1d = series[idx]["total"] if idx < len(series) else 0
+        etf5d = sum(item["total"] for item in window[:5])
+        etf10d = sum(item["total"] for item in window[:10])
+        prev_val = series[idx + 1]["total"] if idx + 1 < len(series) else 0
+        prev_extreme = prev_val <= -180
+    else:
+        etf1d = parsed[0]["total"] if parsed else 0
+        etf5d = sum(item["total"] for item in parsed[:5])
+        etf10d = sum(item["total"] for item in parsed[:10])
+        prev_extreme = False
     return (
         {
             "etf1d": etf1d,
             "etf5d": etf5d,
             "etf10d": etf10d,
-            "prevEtfExtremeOutflow": False,
+            "prevEtfExtremeOutflow": prev_extreme,
         },
         {
             "etf1d": source or "Farside: 未获取",
@@ -530,7 +664,45 @@ def fetch_farside():
     )
 
 
-def fetch_coingecko_market():
+def fetch_coingecko_market(target_date=None):
+    if target_date:
+        history_date = datetime.strptime(target_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+        url = f"https://api.coingecko.com/api/v3/coins/ethereum/history?date={history_date}"
+        data = fetch_json(url)
+        market = data.get("market_data", {}) if isinstance(data, dict) else {}
+        eth_spot = (market.get("current_price") or {}).get("usd", 0)
+        market_cap = (market.get("market_cap") or {}).get("usd", 0)
+        volume_24h = (market.get("total_volume") or {}).get("usd", 0)
+        circulating = market.get("circulating_supply") or 0
+        total_supply = market.get("total_supply") or circulating or 1
+        float_density = circulating / total_supply if total_supply else 1
+        chart = fetch_json(
+            "https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=365"
+        )
+        mcap_now, mcap_prev = chart_value_at_date(chart.get("market_caps"), target_date) if chart else (None, None)
+        mcap_change = percent_change(mcap_now, mcap_prev) / 100 if mcap_now and mcap_prev else 0
+        volume_now, _prev_vol = chart_value_at_date(chart.get("total_volumes"), target_date) if chart else (None, None)
+        volume_24h = volume_now or volume_24h
+        mcap_elasticity = market_cap / volume_24h if volume_24h else 0
+        return (
+            {
+                "ethSpotPrice": eth_spot,
+                "mcapGrowth": mcap_change,
+                "mcapElasticity": mcap_elasticity,
+                "floatDensity": float_density,
+                "trendMomentum": 0,
+                "divergence": 0,
+            },
+            {
+                "ethSpotPrice": "CoinGecko: history current_price.usd",
+                "mcapGrowth": "CoinGecko: market_chart (1d)",
+                "mcapElasticity": "CoinGecko: market_cap / volume",
+                "floatDensity": "CoinGecko: circulating / total_supply",
+                "trendMomentum": "CoinGecko: history (placeholder)",
+                "divergence": "CoinGecko: history (placeholder)",
+            },
+            [],
+        )
     url = (
         "https://api.coingecko.com/api/v3/coins/ethereum"
         "?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false"
@@ -539,6 +711,7 @@ def fetch_coingecko_market():
     if not isinstance(data, dict) or not data.get("market_data"):
         return ({}, {}, ["mcapGrowth", "mcapElasticity", "floatDensity", "trendMomentum", "divergence"])
     market = data.get("market_data", {})
+    eth_spot = market.get("current_price", {}).get("usd", 0)
     market_cap = market.get("market_cap", {}).get("usd", 0)
     volume_24h = market.get("total_volume", {}).get("usd", 0)
     mcap_change = (market.get("market_cap_change_percentage_24h") or 0) / 100
@@ -550,6 +723,7 @@ def fetch_coingecko_market():
     mcap_elasticity = market_cap / volume_24h if volume_24h else 0
     return (
         {
+            "ethSpotPrice": eth_spot,
             "mcapGrowth": mcap_change,
             "mcapElasticity": mcap_elasticity,
             "floatDensity": float_density,
@@ -557,6 +731,7 @@ def fetch_coingecko_market():
             "divergence": divergence,
         },
         {
+            "ethSpotPrice": "CoinGecko: current_price.usd",
             "mcapGrowth": "CoinGecko: market_cap_change_percentage_24h",
             "mcapElasticity": "CoinGecko: market_cap / volume_24h",
             "floatDensity": "CoinGecko: circulating / total_supply",
@@ -567,11 +742,22 @@ def fetch_coingecko_market():
     )
 
 
-def fetch_coinglass_liquidations():
+def fetch_coinglass_liquidations(target_date=None):
     url = "https://open-api-v4.coinglass.com/api/futures/liquidation/aggregated-history?symbol=BTC&interval=1d"
     data = fetch_json(url)
     if data.get("code") == "0" and data.get("data"):
-        latest = data["data"][-1]
+        series = data["data"]
+        if target_date:
+            picked = None
+            for item in reversed(series):
+                ts = item.get("time") or item.get("timestamp") or item.get("createTime")
+                date_key = date_key_from_ts(float(ts) / 1000) if ts else None
+                if date_key and date_key <= target_date:
+                    picked = item
+                    break
+            latest = picked or series[-1]
+        else:
+            latest = series[-1]
         liquidation = float(latest.get("aggregated_long_liquidation_usd", 0)) + float(
             latest.get("aggregated_short_liquidation_usd", 0)
         )
@@ -592,7 +778,7 @@ def fetch_coinglass_liquidations():
     return ({}, {}, ["liquidationUsd"])
 
 
-def fetch_exchange_proxy():
+def fetch_exchange_proxy(target_date=None):
     data = fetch_json("https://api.coingecko.com/api/v3/exchanges/binance")
     volume_btc = data.get("trade_volume_24h_btc", 0) or 0
     exch_balance_trend = (volume_btc and (volume_btc ** 0.5) / 1000) or 0
@@ -607,7 +793,7 @@ def fetch_exchange_proxy():
     )
 
 
-def fetch_defillama_cex():
+def fetch_defillama_cex(target_date=None):
     data = fetch_json("https://api.llama.fi/cexs")
     if not isinstance(data, dict) or not data.get("cexs"):
         return ({}, {}, ["exchBalanceTrend", "exchStableDelta"])
@@ -630,33 +816,65 @@ def fetch_defillama_cex():
     )
 
 
-def fetch_coingecko_ohlc():
+def fetch_coingecko_ohlc(target_date=None):
+    days = 365 if target_date else 30
     ohlc = fetch_json(
-        "https://api.coingecko.com/api/v3/coins/ethereum/ohlc?vs_currency=usd&days=30"
+        f"https://api.coingecko.com/api/v3/coins/ethereum/ohlc?vs_currency=usd&days={days}"
     )
     chart = fetch_json(
-        "https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=30"
+        f"https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days={days}"
     )
     if not isinstance(ohlc, list) or not ohlc:
         return ({}, {}, ["crowdingIndex", "longWicks", "reverseFishing", "shortFailure", "volumeConfirm"])
-    closes = [float(item[4]) for item in ohlc]
-    highs = [float(item[2]) for item in ohlc]
-    lows = [float(item[3]) for item in ohlc]
-    opens = [float(item[1]) for item in ohlc]
-    volumes = [float(item[1]) for item in (chart.get("total_volumes") or [])][-len(ohlc) :]
-    if not volumes or len(volumes) < len(ohlc):
-        volumes = [0.0 for _ in closes]
-    latest_open, latest_close = opens[-1], closes[-1]
-    latest_high, latest_low = highs[-1], lows[-1]
-    avg_volume = sum(volumes[:-1]) / max(len(volumes) - 1, 1)
+    ohlc_points = []
+    for item in ohlc:
+        date_key = date_key_from_ts(item[0] / 1000)
+        if not date_key:
+            continue
+        ohlc_points.append(
+            {
+                "date": date_key,
+                "open": float(item[1]),
+                "high": float(item[2]),
+                "low": float(item[3]),
+                "close": float(item[4]),
+            }
+        )
+    ohlc_points.sort(key=lambda item: item["date"], reverse=True)
+    volume_map = {}
+    for item in chart.get("total_volumes") or []:
+        date_key = date_key_from_ts(item[0] / 1000)
+        if not date_key:
+            continue
+        volume_map[date_key] = float(item[1])
+    volumes = [volume_map.get(item["date"], 0.0) for item in ohlc_points]
+    idx = index_for_date(ohlc_points, target_date) if target_date else 0
+    idx = min(idx, len(ohlc_points) - 1)
+    latest = ohlc_points[idx]
+    latest_open = latest["open"]
+    latest_close = latest["close"]
+    latest_high = latest["high"]
+    latest_low = latest["low"]
+    prev_window = volumes[idx + 1 : idx + 8]
+    avg_volume = sum(prev_window) / max(len(prev_window), 1)
     wick_ratio = (latest_high - max(latest_open, latest_close)) / max(latest_high - latest_low, 1)
-    trend_momentum = (latest_close - closes[-8]) / closes[-8] if len(closes) > 8 else 0
-    divergence = abs((latest_close - closes[-2]) / closes[-2]) if len(closes) > 2 else 0
+    trend_momentum = (
+        (latest_close - ohlc_points[idx + 7]["close"]) / ohlc_points[idx + 7]["close"]
+        if idx + 7 < len(ohlc_points)
+        else 0
+    )
+    divergence = (
+        abs((latest_close - ohlc_points[idx + 1]["close"]) / ohlc_points[idx + 1]["close"])
+        if idx + 1 < len(ohlc_points)
+        else 0
+    )
     crowding_index = min(100, 50 + abs(trend_momentum) * 500)
     long_wicks = wick_ratio > 0.4
-    reverse_fishing = latest_close < latest_open and volumes[-1] > avg_volume * 1.5
+    reverse_fishing = latest_close < latest_open and volumes[idx] > avg_volume * 1.5
     short_failure = latest_close > latest_open and (latest_close - latest_low) / max(latest_high - latest_low, 1) > 0.6
-    volume_confirm = volumes[-1] >= avg_volume * 1.2
+    volume_confirm = volumes[idx] >= avg_volume * 1.2
+    close_window = [item["close"] for item in ohlc_points[idx : idx + 30]]
+    volume_window = volumes[idx : idx + 30]
     return (
         {
             "trendMomentum": trend_momentum,
@@ -666,23 +884,23 @@ def fetch_coingecko_ohlc():
             "reverseFishing": reverse_fishing,
             "shortFailure": short_failure,
             "volumeConfirm": volume_confirm,
-            "_closeSeries": closes[-30:],
-            "_volumeSeries": volumes[-30:],
+            "_closeSeries": close_window,
+            "_volumeSeries": volume_window,
         },
         {
-            "trendMomentum": "CoinGecko: ohlc (30d)",
-            "divergence": "CoinGecko: ohlc (30d)",
-            "crowdingIndex": "CoinGecko: ohlc (30d)",
-            "longWicks": "CoinGecko: ohlc (30d)",
-            "reverseFishing": "CoinGecko: ohlc (30d)",
-            "shortFailure": "CoinGecko: ohlc (30d)",
+            "trendMomentum": "CoinGecko: ohlc (365d)" if target_date else "CoinGecko: ohlc (30d)",
+            "divergence": "CoinGecko: ohlc (365d)" if target_date else "CoinGecko: ohlc (30d)",
+            "crowdingIndex": "CoinGecko: ohlc (365d)" if target_date else "CoinGecko: ohlc (30d)",
+            "longWicks": "CoinGecko: ohlc (365d)" if target_date else "CoinGecko: ohlc (30d)",
+            "reverseFishing": "CoinGecko: ohlc (365d)" if target_date else "CoinGecko: ohlc (30d)",
+            "shortFailure": "CoinGecko: ohlc (365d)" if target_date else "CoinGecko: ohlc (30d)",
             "volumeConfirm": "CoinGecko: market_chart total_volumes",
         },
         [],
     )
 
 
-def fetch_rwa_protocols():
+def fetch_rwa_protocols(target_date=None):
     data = fetch_json("https://api.llama.fi/protocols")
     if not isinstance(data, list):
         return ({}, {}, ["rsdScore", "mappingRatioDown"])
@@ -704,7 +922,7 @@ def fetch_rwa_protocols():
     )
 
 
-def fetch_eth_fees():
+def fetch_eth_fees(target_date=None):
     data = fetch_json("https://api.llama.fi/summary/fees/ethereum")
     if not isinstance(data, dict) or not data:
         return ({}, {}, ["lstcScore", "netIssuanceHigh"])
@@ -717,7 +935,7 @@ def fetch_eth_fees():
     )
 
 
-def fetch_fear_greed():
+def fetch_fear_greed(target_date=None):
     data = fetch_json("https://api.alternative.me/fng/?limit=1&format=json")
     try:
         value = float(data.get("data", [{}])[0].get("value"))
@@ -726,7 +944,7 @@ def fetch_fear_greed():
         return ({}, {}, ["sentimentThreshold"])
 
 
-def fetch_distribution_gate():
+def fetch_distribution_gate(target_date=None):
     url = (
         "https://api.gdeltproject.org/api/v2/doc/doc?"
         "query=crypto%20ETF%20OR%20crypto%20ETP%20OR%20crypto%20ETNs"
@@ -840,12 +1058,22 @@ def strip_none(data):
     return {k: v for k, v in data.items() if v is not None}
 
 
-def main():
+def today_key():
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", dest="target_date", default=None)
+    parser.add_argument("--output", dest="output_path", default=os.path.join("src", "data", "auto.json"))
+    args = parser.parse_args(argv)
+    target_date = args.target_date
     errors = []
 
     def safe_call(name, func, missing_keys):
         try:
-            result = func()
+            result = func(target_date)
             if isinstance(result, tuple) and len(result) == 4:
                 data, sources, missing, extra_errors = result
                 if extra_errors:
@@ -856,7 +1084,7 @@ def main():
             errors.append(f"{name}: {exc}")
             return {}, {}, missing_keys
 
-    macro = fetch_macro()
+    macro = fetch_macro(target_date)
     stable = safe_call("DefiLlama(stablecoin)", fetch_defillama, ["stablecoin30d"])
     stable_eth = safe_call("DefiLlama(stablecoin_eth)", fetch_stablecoin_eth, ["mappingRatioDown"])
     etf = safe_call("Farside(ETF)", fetch_farside, ["etf1d", "etf5d", "etf10d"])
@@ -948,6 +1176,9 @@ def main():
             }
         )
 
+    if target_date and target_date != today_key():
+        errors.append("历史日期回抓：部分来源仅支持最新数据，已使用最新值补齐。")
+
     for key in REQUIRED_FIELDS:
         if key not in data or data[key] is None:
             missing.append(key)
@@ -965,13 +1196,14 @@ def main():
     data = strip_none(data)
     payload = {
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "targetDate": target_date,
         "data": data,
         "sources": sources,
         "missing": sorted(set(missing)),
         "proxyTrace": probe_proxy(),
         "errors": errors,
     }
-    with open("src/data/auto.json", "w", encoding="utf-8") as f:
+    with open(args.output_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 

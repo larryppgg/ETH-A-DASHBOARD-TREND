@@ -224,6 +224,7 @@ export function renderTimelineOverview(container, legendContainer, history, sele
   const betaSeries = buildSeries(sorted, (item) => item.output.beta).map((item) => item.value);
   const confidenceSeries = buildSeries(sorted, (item) => item.output.confidence).map((item) => item.value);
   const fofSeries = buildSeries(sorted, (item) => item.output.fofScore / 100).map((item) => item.value);
+  const priceSeries = buildSeries(sorted, (item) => item.input?.ethSpotPrice).map((item) => item.value);
   const volSeries = buildVolatilityBars(betaSeries);
   const allValues = [...betaSeries, ...confidenceSeries, ...fofSeries].filter(
     (value) => typeof value === "number"
@@ -236,6 +237,19 @@ export function renderTimelineOverview(container, legendContainer, history, sele
   const betaPoints = buildPoints(betaSeries, width, height, padding, min, max);
   const confPoints = buildPoints(confidenceSeries, width, height, padding, min, max);
   const fofPoints = buildPoints(fofSeries, width, height, padding, min, max);
+  const priceValues = priceSeries.filter((value) => typeof value === "number");
+  const priceMin = priceValues.length ? Math.min(...priceValues) : 0;
+  const priceMax = priceValues.length ? Math.max(...priceValues) : 1;
+  const priceFilled = priceSeries.map((value, idx) => {
+    if (typeof value === "number") return value;
+    for (let j = idx + 1; j < priceSeries.length; j += 1) {
+      if (typeof priceSeries[j] === "number") return priceSeries[j];
+    }
+    return priceValues[0];
+  });
+  const pricePoints = priceValues.length
+    ? buildPoints(priceFilled, width, height, padding, priceMin, priceMax)
+    : [];
   const selectedIndex = Math.max(
     0,
     sorted.findIndex((item) => item.date === selectedDate)
@@ -287,10 +301,12 @@ export function renderTimelineOverview(container, legendContainer, history, sele
       <polyline points="${toPath(betaPoints)}" fill="none" stroke="#e0b65b" stroke-width="2" />
       <polyline points="${toPath(confPoints)}" fill="none" stroke="#60d6c2" stroke-width="2" />
       <polyline points="${toPath(fofPoints)}" fill="none" stroke="#59d48f" stroke-width="2" />
+      ${pricePoints.length ? `<polyline points="${toPath(pricePoints)}" fill="none" stroke="#8cb4ff" stroke-width="1.8" />` : ""}
       ${volBars}
       <circle cx="${betaPoints[activeIndex].x}" cy="${betaPoints[activeIndex].y}" r="3.5" fill="#e0b65b" />
       <circle cx="${confPoints[activeIndex].x}" cy="${confPoints[activeIndex].y}" r="3.5" fill="#60d6c2" />
       <circle cx="${fofPoints[activeIndex].x}" cy="${fofPoints[activeIndex].y}" r="3.5" fill="#59d48f" />
+      ${pricePoints.length ? `<circle cx="${pricePoints[activeIndex].x}" cy="${pricePoints[activeIndex].y}" r="3" fill="#8cb4ff" />` : ""}
       ${eventMarks}
     </svg>
   `;
@@ -299,6 +315,7 @@ export function renderTimelineOverview(container, legendContainer, history, sele
       <span><i class="dot" style="background:#e0b65b"></i>β</span>
       <span><i class="dot" style="background:#60d6c2"></i>置信度</span>
       <span><i class="dot" style="background:#59d48f"></i>FoF</span>
+      <span><i class="dot" style="background:#8cb4ff"></i>ETH 现货</span>
       <span><i class="dot" style="background:#e35654"></i>风险事件</span>
       <span><i class="dot" style="background:#f3a545"></i>极限许可</span>
       <span><i class="dot" style="background:#60d6c2"></i>分发闸门</span>
