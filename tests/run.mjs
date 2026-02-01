@@ -133,6 +133,9 @@ function createNode(tag = "div") {
     tag,
     innerHTML: "",
     textContent: "",
+    value: "",
+    disabled: false,
+    style: {},
     dataset: {},
     __handlers: {},
     children: [],
@@ -169,6 +172,12 @@ function createNode(tag = "div") {
       this.__handlers[type] = handler;
     },
     scrollIntoView() {},
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 100, height: 100 };
+    },
+    closest() {
+      return this;
+    },
   };
 }
 
@@ -547,7 +556,103 @@ function testCacheTTLThirtyDays() {
   Date.now = originalNow;
   assert(loaded === null, "Cache TTL should expire after 30 days");
 }
-function run() {
+
+function createAppDom() {
+  const nodes = {};
+  const kanbanCol = createNode("div");
+  const getNode = (id) => {
+    if (!nodes[id]) nodes[id] = createNode("div");
+    return nodes[id];
+  };
+  const doc = {
+    body: { classList: { add() {}, remove() {} } },
+    getElementById(id) {
+      return getNode(id);
+    },
+    querySelectorAll() {
+      return [kanbanCol, kanbanCol, kanbanCol];
+    },
+    querySelector() {
+      return kanbanCol;
+    },
+    createElement(tag) {
+      return createNode(tag);
+    },
+  };
+  return { doc, nodes };
+}
+
+function wait(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function testRunTodayCompletesBeforeAi() {
+  const { doc, nodes } = createAppDom();
+  global.document = doc;
+  global.window = {};
+  let store = {};
+  global.localStorage = {
+    getItem(key) {
+      return store[key] ?? null;
+    },
+    setItem(key, value) {
+      store[key] = value;
+    },
+    removeItem(key) {
+      delete store[key];
+    },
+  };
+
+  doc.getElementById("runDate").value = "2026-02-01";
+
+  const payload = {
+    generatedAt: "2026-02-01T00:00:00Z",
+    data: { ...baseInput(), prevEtfExtremeOutflow: false },
+    sources: {},
+    missing: [],
+    errors: [],
+    proxyTrace: [],
+  };
+
+  let resolveAiStatus;
+  const aiStatusPromise = new Promise((resolve) => {
+    resolveAiStatus = resolve;
+  });
+
+  global.fetch = (url) => {
+    if (typeof url === "string" && url.startsWith("/data/auto.json")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => payload,
+      });
+    }
+    if (url === "/ai/status") {
+      return aiStatusPromise;
+    }
+    if (typeof url === "string" && url.startsWith("/ai/")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ summary: "ok" }),
+      });
+    }
+    return Promise.reject(new Error(`unexpected fetch: ${url}`));
+  };
+
+  await import("../src/app.js");
+  const runPromise = global.window.__runToday__();
+  await wait(0);
+
+  try {
+    assert(nodes.runStatus.textContent === "完成", "今日运行不应阻塞于 AI 请求");
+  } finally {
+    resolveAiStatus({
+      ok: true,
+      json: async () => ({ enabled: false }),
+    });
+    await runPromise;
+  }
+}
+async function run() {
   testMacroGate();
   testLeverageLiquidation();
   testETFBreakout();
@@ -576,7 +681,11 @@ function run() {
   testBuildCombinedInputPrefersPayloadMissing();
   testGateChainHasNodes();
   testEtaTimerTotals();
+  await testRunTodayCompletesBeforeAi();
   console.log("All tests passed.");
 }
 
-run();
+run().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

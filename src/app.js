@@ -598,13 +598,16 @@ async function runToday(options = {}) {
     saveHistory(updated);
     renderSnapshot(updated, targetDate);
     etaTimer.start("ai", Date.now());
-    await runAi(record);
-    etaTimer.end("ai", Date.now());
-    etaTimer.end("total", Date.now());
-    updateEtaDisplay();
     showRunStatus("完成");
     setWorkflowStatus(elements.workflowRun, "完成");
     setWorkflowStatus(elements.workflowReplay, "可回放");
+    runAi(record)
+      .catch(() => {})
+      .finally(() => {
+        etaTimer.end("ai", Date.now());
+        etaTimer.end("total", Date.now());
+        updateEtaDisplay();
+      });
   } finally {
     elements.runBtn.disabled = false;
     elements.runBtn.textContent = "今日运行";
