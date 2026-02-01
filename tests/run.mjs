@@ -352,6 +352,12 @@ function testLayoutSkeleton() {
   });
 }
 
+function testCacheBustingAssets() {
+  const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
+  assert(html.includes("styles.css?v="), "样式应带 cache bust 参数");
+  assert(html.includes("app.js?v="), "脚本应带 cache bust 参数");
+}
+
 function testStyleTokens() {
   const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf-8");
   const tokens = [
@@ -675,6 +681,7 @@ async function run() {
   testShouldAutoRun();
   testNeedsAutoFetch();
   testLayoutSkeleton();
+  testCacheBustingAssets();
   testStyleTokens();
   testRenderOutputActionVariableNaming();
   testSummaryBuilders();
