@@ -13,6 +13,7 @@ import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/c
 import { buildDateWindow } from "../src/ui/historyWindow.js";
 import { formatUsd, buildTooltipText } from "../src/ui/formatters.js";
 import { buildCombinedInput } from "../src/ui/inputBuilder.js";
+import { createEtaTimer } from "../src/ui/etaTimer.js";
 import { buildOverallPrompt } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
 import { shouldAutoRun } from "../src/autoRun.js";
@@ -219,6 +220,52 @@ function testRenderOutputInspector() {
   assert(elements.gateInspector.innerHTML.includes("G0"), "审计面板应显示默认闸门详情");
 }
 
+function testStatusDetailUsesActionSummary() {
+  const kanbanCol = createNode("div");
+  const elements = {
+    statusBadge: createNode(),
+    statusTitle: createNode(),
+    statusSub: createNode(),
+    betaValue: createNode(),
+    hedgeValue: createNode(),
+    phaseValue: createNode(),
+    confidenceValue: createNode(),
+    extremeValue: createNode(),
+    distributionValue: createNode(),
+    lastRun: createNode(),
+    gateList: createNode(),
+    gateInspector: createNode(),
+    topReasons: createNode(),
+    riskNotes: createNode(),
+    betaChart: createNode(),
+    confidenceChart: createNode(),
+    fofChart: createNode(),
+    kanbanA: createNode(),
+    kanbanB: createNode(),
+    kanbanC: createNode(),
+    statusOverview: createNode(),
+    statusDetailA: createNode(),
+    statusDetailB: createNode(),
+    statusDetailC: createNode(),
+  };
+  global.document = {
+    body: { classList: { add() {}, remove() {} } },
+    querySelectorAll() {
+      return [kanbanCol, kanbanCol, kanbanCol];
+    },
+    querySelector() {
+      return kanbanCol;
+    },
+    createElement(tag) {
+      return createNode(tag);
+    },
+  };
+  const output = runPipeline(baseInput());
+  const record = { date: "2026-01-01", input: baseInput(), output };
+  renderOutput(elements, record, [record]);
+  assert(elements.statusDetailB.innerHTML.includes("建议动作"), "状态详情应渲染建议动作");
+}
+
 function testRenderCoverageMissing() {
   const container = createNode();
   const input = {
@@ -381,6 +428,16 @@ function testGateChainHasNodes() {
   assert(container.innerHTML.includes("G0"), "闸门链路应渲染节点");
 }
 
+function testEtaTimerTotals() {
+  const timer = createEtaTimer();
+  timer.start("fetch", 0);
+  timer.end("fetch", 1000);
+  timer.start("compute", 1000);
+  timer.end("compute", 2500);
+  const total = timer.totalMs();
+  assert(total === 2500, "总耗时应为各阶段累加");
+}
+
 function testBuildCombinedInputPrefersPayloadMissing() {
   const payload = {
     data: { stablecoin30d: 1, mappingRatioDown: true, rsdScore: 5 },
@@ -499,6 +556,7 @@ function run() {
   testMacroEtfPenalty();
   testDistributionBoost();
   testRenderOutputInspector();
+  testStatusDetailUsesActionSummary();
   testRenderCoverageMissing();
   testBuildAiPayload();
   testShouldAutoRun();
@@ -517,6 +575,7 @@ function run() {
   testTooltipIncludesDateAndPrice();
   testBuildCombinedInputPrefersPayloadMissing();
   testGateChainHasNodes();
+  testEtaTimerTotals();
   console.log("All tests passed.");
 }
 

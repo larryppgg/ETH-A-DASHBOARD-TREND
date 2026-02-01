@@ -513,6 +513,8 @@ export function renderOutput(elements, record, history) {
   elements.distributionValue.textContent = `${output.distributionGate} / 30D`;
   elements.lastRun.textContent = record.date;
 
+  const action = buildActionSummary(output);
+
   if (elements.statusOverview) {
     const stateIndex = state === "A" ? 0 : state === "B" ? 1 : 2;
     elements.statusOverview.innerHTML = `
@@ -562,7 +564,6 @@ export function renderOutput(elements, record, history) {
   if (elements.healthProxy) elements.healthProxy.textContent = health.proxyText;
   if (elements.healthAi) elements.healthAi.textContent = health.aiText;
 
-  const action = buildActionSummary(output);
   if (elements.overviewAction) elements.overviewAction.textContent = action.action;
   if (elements.overviewActionHint) elements.overviewActionHint.textContent = action.detail;
   if (elements.overviewDrivers) elements.overviewDrivers.textContent = action.drivers.join(" · ") || "—";

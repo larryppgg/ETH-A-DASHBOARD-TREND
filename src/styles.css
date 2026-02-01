@@ -189,6 +189,11 @@ body {
   color: var(--ink);
 }
 
+.eta-card {
+  background: rgba(243, 165, 69, 0.08);
+  border: 1px solid rgba(243, 165, 69, 0.3);
+}
+
 .timeline-panel {
   grid-column: span 12;
   padding: 16px 20px;

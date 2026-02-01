@@ -10,6 +10,7 @@ import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline
 import { buildDateWindow } from "./ui/historyWindow.js";
 import { buildTooltipText } from "./ui/formatters.js";
 import { buildCombinedInput } from "./ui/inputBuilder.js";
+import { createEtaTimer } from "./ui/etaTimer.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
 const inputKey = "eth_a_dashboard_custom_input";
@@ -71,6 +72,7 @@ const elements = {
   statusDetailA: document.getElementById("statusDetailA"),
   statusDetailB: document.getElementById("statusDetailB"),
   statusDetailC: document.getElementById("statusDetailC"),
+  etaValue: document.getElementById("etaValue"),
   actionSummary: document.getElementById("actionSummary"),
   actionDetail: document.getElementById("actionDetail"),
   counterfactuals: document.getElementById("counterfactuals"),
@@ -440,6 +442,14 @@ function showRunStatus(text) {
   elements.runStatus.textContent = text || "";
 }
 
+const etaTimer = createEtaTimer();
+
+function updateEtaDisplay() {
+  if (!elements.etaValue) return;
+  const total = etaTimer.totalMs();
+  elements.etaValue.textContent = etaTimer.formatMs(total);
+}
+
 let selectedDate = null;
 let timelineIndex = buildTimelineIndex([]);
 let historyWindow = buildDateWindow(new Date(), 365);
@@ -528,12 +538,16 @@ async function runToday(options = {}) {
   elements.runBtn.textContent = "运行中...";
   const targetDate = elements.runDate.value || dateKey();
   try {
+    etaTimer.start("total", Date.now());
     const { mode = "auto" } = options;
     let customInput = loadCustomInput();
     if (mode === "auto") {
       showRunStatus("启动自动抓取...");
       setWorkflowStatus(elements.workflowFetch, "抓取中");
+      etaTimer.start("fetch", Date.now());
       const fetched = await autoFetch();
+      etaTimer.end("fetch", Date.now());
+      updateEtaDisplay();
       if (!fetched) {
         showError(["未提供输入数据，请先粘贴 JSON 或插入模板并填写。"]);
         showRunStatus("运行失败：未获取到数据");
@@ -573,14 +587,21 @@ async function runToday(options = {}) {
     showRunStatus("计算中...");
     setWorkflowStatus(elements.workflowValidate, "通过");
     setWorkflowStatus(elements.workflowRun, "计算中");
+    etaTimer.start("compute", Date.now());
     const input = { ...normalizedInput };
     const output = runPipeline(input);
+    etaTimer.end("compute", Date.now());
+    updateEtaDisplay();
     const record = { date: targetDate, input, output };
     const updated = history.filter((item) => item.date !== targetDate);
     updated.push(record);
     saveHistory(updated);
     renderSnapshot(updated, targetDate);
-    runAi(record);
+    etaTimer.start("ai", Date.now());
+    await runAi(record);
+    etaTimer.end("ai", Date.now());
+    etaTimer.end("total", Date.now());
+    updateEtaDisplay();
     showRunStatus("完成");
     setWorkflowStatus(elements.workflowRun, "完成");
     setWorkflowStatus(elements.workflowReplay, "可回放");
@@ -694,9 +715,15 @@ async function selectHistoryDate(date) {
     setHistoryHint("已载入本地快照");
     return;
   }
+  etaTimer.start("total", Date.now());
+  etaTimer.start("fetch", Date.now());
   setHistoryHint("抓取中...");
   const payload = await fetchHistoryDate(date);
+  etaTimer.end("fetch", Date.now());
+  updateEtaDisplay();
   if (!payload) {
+    etaTimer.end("total", Date.now());
+    updateEtaDisplay();
     setHistoryHint("抓取失败");
     return;
   }
@@ -708,13 +735,20 @@ async function selectHistoryDate(date) {
     setHistoryHint("数据不完整，无法回放");
     return;
   }
+  etaTimer.start("compute", Date.now());
   const output = runPipeline(normalized);
+  etaTimer.end("compute", Date.now());
+  updateEtaDisplay();
   const record = { date, input: normalized, output };
   const updated = history.filter((item) => item.date !== date);
   updated.push(record);
   saveHistory(updated);
   renderSnapshot(updated, date);
-  runAi(record);
+  etaTimer.start("ai", Date.now());
+  await runAi(record);
+  etaTimer.end("ai", Date.now());
+  etaTimer.end("total", Date.now());
+  updateEtaDisplay();
   setHistoryHint("已抓取并写入历史");
 }
 
