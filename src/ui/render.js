@@ -513,7 +513,7 @@ export function renderOutput(elements, record, history) {
   elements.distributionValue.textContent = `${output.distributionGate} / 30D`;
   elements.lastRun.textContent = record.date;
 
-  const action = buildActionSummary(output);
+  const actionSummary = buildActionSummary(output);
 
   if (elements.statusOverview) {
     const stateIndex = state === "A" ? 0 : state === "B" ? 1 : 2;
@@ -534,9 +534,9 @@ export function renderOutput(elements, record, history) {
     current.classList.add("active");
     current.innerHTML = `
       <div class="detail-title">当前状态要点</div>
-      <div class="detail-row"><span>建议动作</span><strong>${action.action}</strong></div>
-      <div class="detail-row"><span>核心驱动</span><strong>${action.drivers.join(" / ") || "—"}</strong></div>
-      <div class="detail-row"><span>风险阻断</span><strong>${action.blocks.join(" / ") || "无"}</strong></div>
+      <div class="detail-row"><span>建议动作</span><strong>${actionSummary.action}</strong></div>
+      <div class="detail-row"><span>核心驱动</span><strong>${actionSummary.drivers.join(" / ") || "—"}</strong></div>
+      <div class="detail-row"><span>风险阻断</span><strong>${actionSummary.blocks.join(" / ") || "无"}</strong></div>
     `;
   }
 
@@ -564,18 +564,18 @@ export function renderOutput(elements, record, history) {
   if (elements.healthProxy) elements.healthProxy.textContent = health.proxyText;
   if (elements.healthAi) elements.healthAi.textContent = health.aiText;
 
-  if (elements.overviewAction) elements.overviewAction.textContent = action.action;
-  if (elements.overviewActionHint) elements.overviewActionHint.textContent = action.detail;
-  if (elements.overviewDrivers) elements.overviewDrivers.textContent = action.drivers.join(" · ") || "—";
+  if (elements.overviewAction) elements.overviewAction.textContent = actionSummary.action;
+  if (elements.overviewActionHint) elements.overviewActionHint.textContent = actionSummary.detail;
+  if (elements.overviewDrivers) elements.overviewDrivers.textContent = actionSummary.drivers.join(" · ") || "—";
   if (elements.overviewDriversHint)
-    elements.overviewDriversHint.textContent = action.drivers.length ? "Top 驱动已标记" : "—";
+    elements.overviewDriversHint.textContent = actionSummary.drivers.length ? "Top 驱动已标记" : "—";
   if (elements.overviewBlocks)
-    elements.overviewBlocks.textContent = action.blocks.slice(0, 2).join(" · ") || "无";
+    elements.overviewBlocks.textContent = actionSummary.blocks.slice(0, 2).join(" · ") || "无";
   if (elements.overviewBlocksHint)
-    elements.overviewBlocksHint.textContent = action.blocks.length ? "详见风险注记" : "无阻断";
+    elements.overviewBlocksHint.textContent = actionSummary.blocks.length ? "详见风险注记" : "无阻断";
 
-  if (elements.actionSummary) elements.actionSummary.textContent = action.action;
-  if (elements.actionDetail) elements.actionDetail.textContent = action.detail;
+  if (elements.actionSummary) elements.actionSummary.textContent = actionSummary.action;
+  if (elements.actionDetail) elements.actionDetail.textContent = actionSummary.detail;
   if (elements.counterfactuals)
     elements.counterfactuals.innerHTML = buildCounterfactuals(output).map((item) => `<div>${item}</div>`).join("");
   if (elements.missingImpact)

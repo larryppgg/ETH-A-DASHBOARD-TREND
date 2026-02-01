@@ -368,6 +368,14 @@ function testStyleTokens() {
   });
 }
 
+function testRenderOutputActionVariableNaming() {
+  const renderSource = readFileSync(new URL("../src/ui/render.js", import.meta.url), "utf-8");
+  assert(
+    renderSource.includes("const actionSummary = buildActionSummary"),
+    "renderOutput 应使用 actionSummary 命名以避免 TDZ"
+  );
+}
+
 function testSummaryBuilders() {
   const health = buildHealthSummary({ __missing: ["dxy5d"], __errors: [] });
   assert(health.level === "warn", "健康摘要应识别缺失字段");
@@ -668,6 +676,7 @@ async function run() {
   testNeedsAutoFetch();
   testLayoutSkeleton();
   testStyleTokens();
+  testRenderOutputActionVariableNaming();
   testSummaryBuilders();
   testOverallPrompt();
   testTimelineIndex();
