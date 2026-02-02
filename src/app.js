@@ -9,7 +9,6 @@ import { cacheHistory, loadCachedHistory, resetCachedHistory } from "./ui/cache.
 import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline.js";
 import { buildDateWindow } from "./ui/historyWindow.js";
 import { buildTooltipText } from "./ui/formatters.js";
-import { deriveTrustLevel } from "./ui/summary.js";
 import { buildCombinedInput } from "./ui/inputBuilder.js";
 import { createEtaTimer } from "./ui/etaTimer.js";
 
@@ -585,12 +584,25 @@ function updateRunMetaFromRecord(record) {
       ? `OK (${proxyTrace.map((item) => item.proxy).join("/")})`
       : `WARN (${proxyTrace.map((item) => item.proxy).join("/")})`;
   }
-  const trust = deriveTrustLevel(input);
+  const missing = input.__missing || [];
+  const errors = input.__errors || [];
+  const softOnly =
+    errors.length > 0 &&
+    errors.every((err) => /fallback|blocked|cloudflare|rate limit/i.test(err));
+  let trust = "OK";
+  let trustLevel = "ok";
+  if (errors.length && !softOnly) {
+    trust = "FAIL";
+    trustLevel = "danger";
+  } else if (missing.length || softOnly) {
+    trust = "WARN";
+    trustLevel = "warn";
+  }
   setRunMeta({
     dataTime: generatedAt ? `抓取 ${formatRunTimestamp(generatedAt)}` : "--",
     source: proxyText,
-    trust: trust.label,
-    trustLevel: trust.level,
+    trust,
+    trustLevel,
   });
 }
 

@@ -362,8 +362,8 @@ function testLayoutSkeleton() {
 
 function testCacheBustingAssets() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
-  assert(html.includes("styles.css?v=20260202-4"), "样式应带最新 cache bust 参数");
-  assert(html.includes("app.js?v=20260202-4"), "脚本应带最新 cache bust 参数");
+  assert(html.includes("styles.css?v=20260202-5"), "样式应带最新 cache bust 参数");
+  assert(html.includes("app.js?v=20260202-5"), "脚本应带最新 cache bust 参数");
 }
 
 function testStyleTokens() {
@@ -395,6 +395,14 @@ function testAppDoesNotImportRefreshMissingFields() {
   assert(
     !source.includes("refreshMissingFields } from \"./ui/inputBuilder.js\""),
     "app.js 不应从 inputBuilder 导入 refreshMissingFields"
+  );
+}
+
+function testAppDoesNotImportDeriveTrustLevel() {
+  const source = readFileSync(new URL("../src/app.js", import.meta.url), "utf-8");
+  assert(
+    !source.includes("deriveTrustLevel"),
+    "app.js 不应导入 deriveTrustLevel，避免浏览器缓存不一致"
   );
 }
 
@@ -723,6 +731,7 @@ async function run() {
   testStyleTokens();
   testRenderOutputActionVariableNaming();
   testAppDoesNotImportRefreshMissingFields();
+  testAppDoesNotImportDeriveTrustLevel();
   testSummaryBuilders();
   testOverallPrompt();
   testTimelineIndex();
