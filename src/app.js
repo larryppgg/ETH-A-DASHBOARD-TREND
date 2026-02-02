@@ -9,7 +9,7 @@ import { cacheHistory, loadCachedHistory, resetCachedHistory } from "./ui/cache.
 import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline.js";
 import { buildDateWindow } from "./ui/historyWindow.js";
 import { buildTooltipText } from "./ui/formatters.js";
-import { buildCombinedInput, refreshMissingFields } from "./ui/inputBuilder.js";
+import { buildCombinedInput } from "./ui/inputBuilder.js";
 import { createEtaTimer } from "./ui/etaTimer.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
@@ -92,6 +92,15 @@ const elements = {
   historyDate: document.getElementById("historyDate"),
   historyHint: document.getElementById("historyHint"),
 };
+
+function refreshMissingFields(input, schemaKeys = []) {
+  if (!input || !Array.isArray(schemaKeys)) {
+    return [];
+  }
+  const missing = schemaKeys.filter((key) => input[key] === null || input[key] === undefined);
+  input.__missing = missing;
+  return missing;
+}
 
 const inputSchema = {
   dxy5d: "number",

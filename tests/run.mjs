@@ -385,6 +385,14 @@ function testRenderOutputActionVariableNaming() {
   );
 }
 
+function testAppDoesNotImportRefreshMissingFields() {
+  const source = readFileSync(new URL("../src/app.js", import.meta.url), "utf-8");
+  assert(
+    !source.includes("refreshMissingFields } from \"./ui/inputBuilder.js\""),
+    "app.js 不应从 inputBuilder 导入 refreshMissingFields"
+  );
+}
+
 function testSummaryBuilders() {
   const health = buildHealthSummary({ __missing: ["dxy5d"], __errors: [] });
   assert(health.level === "warn", "健康摘要应识别缺失字段");
@@ -701,6 +709,7 @@ async function run() {
   testCacheBustingAssets();
   testStyleTokens();
   testRenderOutputActionVariableNaming();
+  testAppDoesNotImportRefreshMissingFields();
   testSummaryBuilders();
   testOverallPrompt();
   testTimelineIndex();
