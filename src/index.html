@@ -133,7 +133,6 @@
 
       <section class="panel gate-audit-panel">
         <div class="panel-title">闸门链路 · 审计面板</div>
-        <div class="gate-summary" id="gateSummary"></div>
         <div class="gate-audit-grid">
           <div class="gate-chain" id="gateChain"></div>
           <div class="audit-visual" id="auditVisual"></div>
@@ -172,6 +171,18 @@
             <div class="kanban-head">C / 避险档</div>
             <div class="kanban-body" id="kanbanC"></div>
           </div>
+        </div>
+      </section>
+
+      <section class="panel gateflow">
+        <div class="panel-title">闸门链路 · 逐步可审计</div>
+        <div class="gate-track" id="gateList"></div>
+      </section>
+
+      <section class="panel inspector">
+        <div class="panel-title">审计面板</div>
+        <div id="gateInspector" class="inspector-body">
+          <div class="inspector-empty">点击任意闸门，查看输入、来源与计算过程。</div>
         </div>
       </section>
 

@@ -230,7 +230,7 @@ export function renderAuditVisual(container, gate) {
   `;
 }
 
-export function renderReasons(listContainer, notesContainer, reasons, notes, gateMap, onSelect) {
+export function renderReasons(listContainer, notesContainer, reasons, notes, gateMap, gateList, inspector, onSelect) {
   listContainer.innerHTML = "";
   reasons.forEach((item) => {
     const li = document.createElement("li");
@@ -247,6 +247,9 @@ export function renderReasons(listContainer, notesContainer, reasons, notes, gat
     item.addEventListener("click", () => {
       const gate = gateMap.get(item.dataset.gateId);
       if (gate) {
+        const gateNode = gateList.querySelector(`[data-gate-id="${item.dataset.gateId}"]`);
+        gateNode?.scrollIntoView({ behavior: "smooth", block: "center" });
+        renderInspector(inspector, gate);
         if (typeof onSelect === "function") {
           onSelect(gate);
         }
@@ -579,55 +582,54 @@ export function renderOutput(elements, record, history) {
     elements.missingImpact.innerHTML = buildMissingImpact(record.input).map((item) => `<div>${item}</div>`).join("");
 
   renderKanban(elements, state, output);
-  const gates = output.gates || [];
-  const gateMap = new Map(gates.map((gate) => [gate.id, gate]));
-  const defaultGateId = output.reasonsTop3?.[0]?.gateId || gates[0]?.id;
-  const defaultGate = gateMap.get(defaultGateId) || gates[0];
-
-  const renderGateSummary = (gate) => {
-    if (!elements.gateSummary || !gate) return;
-    const topReasons = output.reasonsTop3 || [];
-    const reasonItems = topReasons.length
-      ? topReasons.map((item) => `<span class="gate-summary-chip">${item.text}</span>`).join("")
-      : '<span class="gate-summary-empty">暂无驱动</span>';
-    elements.gateSummary.innerHTML = `
-      <div class="gate-summary-left">
-        <div class="gate-summary-title">Top3 驱动</div>
-        <div class="gate-summary-list">${reasonItems}</div>
-      </div>
-      <div class="gate-summary-right">
-        <div class="gate-summary-title">当前闸门</div>
-        <div class="gate-summary-card">
-          <div class="gate-summary-id">${gate.id}</div>
-          <div class="gate-summary-name">${gate.name}</div>
-          <div class="gate-summary-status ${gate.status}">${gate.status.toUpperCase()}</div>
-          <div class="gate-summary-note">${gate.note || "—"}</div>
-        </div>
-      </div>
-    `;
-  };
-
-  const selectGate = (gate) => {
-    if (!gate) return;
-    renderGateChain(elements.gateChain, gates, gate.id, selectGate);
+  renderGates(elements.gateList, elements.gateInspector, output.gates, (gate) => {
+    renderGateChain(elements.gateChain, output.gates, gate.id);
     renderAuditVisual(elements.auditVisual, gate);
-    renderGateSummary(gate);
-  };
-
-  if (defaultGate) {
-    renderGateChain(elements.gateChain, gates, defaultGate.id, selectGate);
-    renderAuditVisual(elements.auditVisual, defaultGate);
-    renderGateSummary(defaultGate);
-  }
-
+  });
+  const gateMap = new Map(output.gates.map((gate) => [gate.id, gate]));
   renderReasons(
     elements.topReasons,
     elements.riskNotes,
-    output.reasonsTop3 || [],
-    output.riskNotes || [],
+    output.reasonsTop3,
+    output.riskNotes,
     gateMap,
-    selectGate
+    elements.gateList,
+    elements.gateInspector,
+    (gate) => {
+      renderGateChain(elements.gateChain, output.gates, gate.id);
+      renderAuditVisual(elements.auditVisual, gate);
+    }
   );
+  renderGateChain(elements.gateChain, output.gates, output.gates[0]?.id, (gate) => {
+    const gateNode = elements.gateList?.querySelector(`[data-gate-id="${gate.id}"]`);
+    gateNode?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (gateNode) {
+      elements.gateList?.querySelectorAll(".gate-item")?.forEach((node) => node.classList.remove("active"));
+      gateNode.classList.add("active");
+    }
+    renderAuditVisual(elements.auditVisual, gate);
+    if (elements.gateInspector) {
+      const details = gate.details || {};
+      const steps = details.steps && details.steps.length ? details.steps : ["读取输入", "计算阈值/得分", "应用规则"];
+      const rules = details.rules && details.rules.length ? details.rules.join(" / ") : "无";
+      elements.gateInspector.innerHTML = `
+        <div class="inspector-title">${gate.id} · ${gate.name}</div>
+        <div class="inspector-grid">
+          ${renderKeyValueBlock("输入", details.inputs)}
+          ${renderKeyValueBlock("来源", details.sources)}
+          ${renderKeyValueBlock("计算", details.calc)}
+          <div class="inspector-block">
+            <h4>步骤</h4>
+            ${steps.map((step) => `<div>${step}</div>`).join("")}
+          </div>
+          <div class="inspector-block">
+            <h4>规则命中</h4>
+            <div>${rules}</div>
+          </div>
+        </div>
+      `;
+    }
+  });
   if (elements.evidenceHints) {
     const hints = buildEvidenceHints(output);
     elements.evidenceHints.innerHTML = hints.map((item) => `<div>${item}</div>`).join("");
