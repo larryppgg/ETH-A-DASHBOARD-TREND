@@ -425,24 +425,105 @@ body {
   gap: 14px;
 }
 
+.gate-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(22, 28, 36, 0.7);
+}
+
+.gate-summary-title {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+
+.gate-summary-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gate-summary-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.gate-summary-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gate-summary-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.gate-summary-id {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.gate-summary-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.gate-summary-status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.gate-summary-status.open {
+  color: #59d48f;
+}
+
+.gate-summary-status.warn {
+  color: #f3a545;
+}
+
+.gate-summary-status.closed {
+  color: #e35654;
+}
+
+.gate-summary-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .gate-audit-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
   gap: 16px;
 }
 
 .gate-chain,
 .audit-visual {
-  min-height: 220px;
+  min-height: 200px;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(22, 28, 36, 0.7);
 }
 
 .audit-visual {
-  padding: 14px;
+  padding: 16px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .audit-head {
@@ -470,11 +551,19 @@ body {
 
 .audit-row {
   display: grid;
-  grid-template-columns: 1fr 1.2fr 0.6fr 1.2fr;
-  gap: 8px;
+  grid-template-columns: 1.2fr 1fr 0.7fr 1.4fr;
+  gap: 10px;
   align-items: center;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ink);
+}
+
+.audit-key {
+  font-weight: 600;
+}
+
+.audit-value {
+  font-weight: 600;
 }
 
 .audit-bar {

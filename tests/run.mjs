@@ -6,7 +6,7 @@ import { evalSVC } from "../src/engine/rules/svc.js";
 import { evalLiquidity } from "../src/engine/rules/liquidity.js";
 import { evalDanger } from "../src/engine/rules/danger.js";
 import { runPipeline } from "../src/engine/pipeline.js";
-import { renderCoverage, renderOutput, renderTimelineOverview, renderGateChain } from "../src/ui/render.js";
+import { renderCoverage, renderOutput, renderTimelineOverview, renderGateChain, renderReasons } from "../src/ui/render.js";
 import { buildActionSummary, buildHealthSummary, buildMissingImpact } from "../src/ui/summary.js";
 import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline.js";
 import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/cache.js";
@@ -181,7 +181,7 @@ function createNode(tag = "div") {
   };
 }
 
-function testRenderOutputInspector() {
+function testRenderOutputAuditVisual() {
   const kanbanCol = createNode("div");
   global.document = {
     body: { classList: { add() {}, remove() {} } },
@@ -207,9 +207,11 @@ function testRenderOutputInspector() {
     distributionValue: createNode(),
     lastRun: createNode(),
     gateList: createNode(),
-    gateInspector: createNode(),
+    gateSummary: createNode(),
     topReasons: createNode(),
     riskNotes: createNode(),
+    auditVisual: createNode(),
+    gateChain: createNode(),
     betaChart: createNode(),
     confidenceChart: createNode(),
     fofChart: createNode(),
@@ -224,9 +226,7 @@ function testRenderOutputInspector() {
   output.reasonsTop3 = [{ text: "宏观稳定", gateId: "G0" }];
   const record = { date: "2025-01-01", input: baseInput(), output };
   renderOutput(elements, record, [record]);
-  const reasonNode = elements.topReasons.children[0];
-  reasonNode.__handlers.click?.();
-  assert(elements.gateInspector.innerHTML.includes("G0"), "审计面板应显示默认闸门详情");
+  assert(elements.auditVisual.innerHTML.includes("G0"), "审计抽屉应显示默认闸门详情");
 }
 
 function testStatusDetailUsesActionSummary() {
@@ -287,6 +287,27 @@ function testRenderCoverageMissing() {
   assert(container.innerHTML.includes("缺失"), "覆盖矩阵应标记缺失字段");
 }
 
+function testRenderReasonsSelectsGate() {
+  const listContainer = createNode("ol");
+  const notesContainer = createNode("div");
+  const gate = { id: "G0", name: "宏观总闸门" };
+  const gateMap = new Map([["G0", gate]]);
+  let selected = null;
+  renderReasons(
+    listContainer,
+    notesContainer,
+    [{ text: "宏观紧缩关门", gateId: "G0" }],
+    [],
+    gateMap,
+    (nextGate) => {
+      selected = nextGate;
+    }
+  );
+  const item = listContainer.children[0];
+  item.__handlers.click?.();
+  assert(selected && selected.id === "G0", "点击驱动应触发闸门选择");
+}
+
 function testBuildAiPayload() {
   const output = runPipeline(baseInput());
   const record = { date: "2025-01-01", input: baseInput(), output };
@@ -340,6 +361,7 @@ function testLayoutSkeleton() {
     "historyRange",
     "historyDate",
     "historyHint",
+    "gateSummary",
     "gateChain",
     "auditVisual",
     "statusOverview",
@@ -687,7 +709,8 @@ async function run() {
   testTripleHitCutsToC();
   testMacroEtfPenalty();
   testDistributionBoost();
-  testRenderOutputInspector();
+  testRenderOutputAuditVisual();
+  testRenderReasonsSelectsGate();
   testStatusDetailUsesActionSummary();
   testRenderCoverageMissing();
   testBuildAiPayload();
