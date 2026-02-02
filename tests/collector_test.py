@@ -8,6 +8,7 @@ from urllib.error import HTTPError
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import scripts.collector as collector
+import scripts.server as server
 
 
 class TestCollectorFetchJson(unittest.TestCase):
@@ -134,6 +135,13 @@ class TestCollectorFetchJson(unittest.TestCase):
             data, sources, missing = collector.fetch_coingecko_market()
         self.assertIn("ethSpotPrice", data, "应返回 ETH 现货价格")
         self.assertEqual(data.get("ethSpotPrice"), 2100)
+
+    def test_should_disable_cache(self):
+        self.assertTrue(server.should_disable_cache("/app.js"), "js 应禁止缓存")
+        self.assertTrue(server.should_disable_cache("/styles.css"), "css 应禁止缓存")
+        self.assertTrue(server.should_disable_cache("/data/auto.json"), "json 应禁止缓存")
+        self.assertTrue(server.should_disable_cache("/ui/render.js?v=1"), "带参数的 js 也应禁止缓存")
+        self.assertFalse(server.should_disable_cache("/image.png"), "非文本资源可缓存")
 
 if __name__ == "__main__":
     unittest.main()

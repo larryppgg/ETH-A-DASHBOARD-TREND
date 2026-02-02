@@ -13,6 +13,13 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 
+def should_disable_cache(path):
+    if not path:
+        return False
+    path = path.split("?", 1)[0]
+    return path.endswith((".js", ".css", ".json", ".mjs"))
+
+
 def load_env(path):
     if not os.path.exists(path):
         return {}
@@ -86,6 +93,12 @@ def call_doubao(prompt, model, api_key, proxies, system_prompt):
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
+
+    def end_headers(self):
+        if should_disable_cache(self.path):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+        super().end_headers()
 
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
