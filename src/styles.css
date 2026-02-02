@@ -163,10 +163,10 @@ body {
 }
 
 .run-bar-header {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
-  flex-wrap: wrap;
+  align-items: start;
 }
 
 .run-bar-title {
@@ -183,9 +183,13 @@ body {
 
 .run-bar-meta {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  min-width: 300px;
+}
+
+#runMetaLeft,
+#runMetaRight {
+  min-width: 0;
 }
 
 .run-meta {

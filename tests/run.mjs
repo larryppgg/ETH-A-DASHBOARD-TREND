@@ -318,7 +318,6 @@ function testLayoutSkeleton() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
   const ids = [
     "runBar",
-    "runHealth",
     "runStageFetch",
     "runStageValidate",
     "runStageCompute",
@@ -329,6 +328,8 @@ function testLayoutSkeleton() {
     "runMetaDataTime",
     "runMetaSource",
     "runMetaTrust",
+    "runMetaLeft",
+    "runMetaRight",
     "healthFreshness",
     "timelineOverview",
     "timelineRange",
