@@ -62,16 +62,7 @@ const elements = {
   healthMissing: document.getElementById("healthMissing"),
   healthProxy: document.getElementById("healthProxy"),
   healthAi: document.getElementById("healthAi"),
-  overviewAction: document.getElementById("overviewAction"),
-  overviewActionHint: document.getElementById("overviewActionHint"),
-  overviewDrivers: document.getElementById("overviewDrivers"),
-  overviewDriversHint: document.getElementById("overviewDriversHint"),
-  overviewBlocks: document.getElementById("overviewBlocks"),
-  overviewBlocksHint: document.getElementById("overviewBlocksHint"),
   statusOverview: document.getElementById("statusOverview"),
-  statusDetailA: document.getElementById("statusDetailA"),
-  statusDetailB: document.getElementById("statusDetailB"),
-  statusDetailC: document.getElementById("statusDetailC"),
   etaValue: document.getElementById("etaValue"),
   actionSummary: document.getElementById("actionSummary"),
   actionDetail: document.getElementById("actionDetail"),
@@ -90,6 +81,7 @@ const elements = {
   runMetaTime: document.getElementById("runMetaTime"),
   runMetaDataTime: document.getElementById("runMetaDataTime"),
   runMetaSource: document.getElementById("runMetaSource"),
+  runMetaTrust: document.getElementById("runMetaTrust"),
   timelineOverview: document.getElementById("timelineOverview"),
   timelineLegend: document.getElementById("timelineLegend"),
   timelineRange: document.getElementById("timelineRange"),
@@ -565,6 +557,10 @@ function setRunMeta(meta) {
   if (elements.runMetaTime && meta.time) elements.runMetaTime.textContent = meta.time;
   if (elements.runMetaDataTime && meta.dataTime) elements.runMetaDataTime.textContent = meta.dataTime;
   if (elements.runMetaSource && meta.source) elements.runMetaSource.textContent = meta.source;
+  if (elements.runMetaTrust && meta.trust) {
+    elements.runMetaTrust.textContent = meta.trust;
+    elements.runMetaTrust.className = meta.trustLevel ? meta.trustLevel : "";
+  }
 }
 
 function updateRunMetaFromRecord(record) {
@@ -579,9 +575,22 @@ function updateRunMetaFromRecord(record) {
       ? `OK (${proxyTrace.map((item) => item.proxy).join("/")})`
       : `WARN (${proxyTrace.map((item) => item.proxy).join("/")})`;
   }
+  const missing = input.__missing || [];
+  const errors = input.__errors || [];
+  let trust = "OK";
+  let trustLevel = "ok";
+  if (errors.length) {
+    trust = "FAIL";
+    trustLevel = "danger";
+  } else if (missing.length) {
+    trust = "WARN";
+    trustLevel = "warn";
+  }
   setRunMeta({
     dataTime: generatedAt ? formatRunTimestamp(generatedAt) : "--",
     source: proxyText,
+    trust,
+    trustLevel,
   });
 }
 

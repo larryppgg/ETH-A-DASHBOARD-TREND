@@ -344,10 +344,9 @@ export function renderTimelineOverview(container, legendContainer, history, sele
   const sorted = [...history].sort((a, b) => a.date.localeCompare(b.date));
   const betaSeries = buildSeries(sorted, (item) => item.output.beta).map((item) => item.value);
   const confidenceSeries = buildSeries(sorted, (item) => item.output.confidence).map((item) => item.value);
-  const fofSeries = buildSeries(sorted, (item) => item.output.fofScore / 100).map((item) => item.value);
   const priceSeries = buildSeries(sorted, (item) => item.input?.ethSpotPrice).map((item) => item.value);
   const volSeries = buildVolatilityBars(betaSeries);
-  const allValues = [...betaSeries, ...confidenceSeries, ...fofSeries].filter(
+  const allValues = [...betaSeries, ...confidenceSeries].filter(
     (value) => typeof value === "number"
   );
   const min = Math.min(...allValues);
@@ -357,7 +356,6 @@ export function renderTimelineOverview(container, legendContainer, history, sele
   const padding = 12;
   const betaPoints = buildPoints(betaSeries, width, height, padding, min, max);
   const confPoints = buildPoints(confidenceSeries, width, height, padding, min, max);
-  const fofPoints = buildPoints(fofSeries, width, height, padding, min, max);
   const priceValues = priceSeries.filter((value) => typeof value === "number");
   const priceMin = priceValues.length ? Math.min(...priceValues) : 0;
   const priceMax = priceValues.length ? Math.max(...priceValues) : 1;
@@ -421,12 +419,10 @@ export function renderTimelineOverview(container, legendContainer, history, sele
       <line x1="${lineX}" y1="10" x2="${lineX}" y2="${height - 10}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 4" />
       <polyline points="${toPath(betaPoints)}" fill="none" stroke="#e0b65b" stroke-width="2" />
       <polyline points="${toPath(confPoints)}" fill="none" stroke="#60d6c2" stroke-width="2" />
-      <polyline points="${toPath(fofPoints)}" fill="none" stroke="#59d48f" stroke-width="2" />
       ${pricePoints.length ? `<polyline points="${toPath(pricePoints)}" fill="none" stroke="#8cb4ff" stroke-width="1.8" />` : ""}
       ${volBars}
       <circle cx="${betaPoints[activeIndex].x}" cy="${betaPoints[activeIndex].y}" r="3.5" fill="#e0b65b" />
       <circle cx="${confPoints[activeIndex].x}" cy="${confPoints[activeIndex].y}" r="3.5" fill="#60d6c2" />
-      <circle cx="${fofPoints[activeIndex].x}" cy="${fofPoints[activeIndex].y}" r="3.5" fill="#59d48f" />
       ${pricePoints.length ? `<circle cx="${pricePoints[activeIndex].x}" cy="${pricePoints[activeIndex].y}" r="3" fill="#8cb4ff" />` : ""}
       ${eventMarks}
     </svg>
@@ -435,7 +431,6 @@ export function renderTimelineOverview(container, legendContainer, history, sele
     legendContainer.innerHTML = `
       <span><i class="dot" style="background:#e0b65b"></i>β</span>
       <span><i class="dot" style="background:#60d6c2"></i>置信度</span>
-      <span><i class="dot" style="background:#59d48f"></i>FoF</span>
       <span><i class="dot" style="background:#8cb4ff"></i>ETH 现货</span>
       <span><i class="dot" style="background:#e35654"></i>风险事件</span>
       <span><i class="dot" style="background:#f3a545"></i>极限许可</span>
@@ -525,20 +520,6 @@ export function renderOutput(elements, record, history) {
       </div>
     `;
   }
-  const detailA = elements.statusDetailA;
-  const detailB = elements.statusDetailB;
-  const detailC = elements.statusDetailC;
-  if (detailA && detailB && detailC) {
-    [detailA, detailB, detailC].forEach((node) => node.classList.remove("active"));
-    const current = state === "A" ? detailA : state === "B" ? detailB : detailC;
-    current.classList.add("active");
-    current.innerHTML = `
-      <div class="detail-title">当前状态要点</div>
-      <div class="detail-row"><span>建议动作</span><strong>${actionSummary.action}</strong></div>
-      <div class="detail-row"><span>核心驱动</span><strong>${actionSummary.drivers.join(" / ") || "—"}</strong></div>
-      <div class="detail-row"><span>风险阻断</span><strong>${actionSummary.blocks.join(" / ") || "无"}</strong></div>
-    `;
-  }
 
   if (elements.timelineLabel && history.length) {
     const sortedDates = [...history].sort((a, b) => a.date.localeCompare(b.date)).map((item) => item.date);
@@ -563,16 +544,10 @@ export function renderOutput(elements, record, history) {
   if (elements.healthMissing) elements.healthMissing.textContent = health.missingText;
   if (elements.healthProxy) elements.healthProxy.textContent = health.proxyText;
   if (elements.healthAi) elements.healthAi.textContent = health.aiText;
-
-  if (elements.overviewAction) elements.overviewAction.textContent = actionSummary.action;
-  if (elements.overviewActionHint) elements.overviewActionHint.textContent = actionSummary.detail;
-  if (elements.overviewDrivers) elements.overviewDrivers.textContent = actionSummary.drivers.join(" · ") || "—";
-  if (elements.overviewDriversHint)
-    elements.overviewDriversHint.textContent = actionSummary.drivers.length ? "Top 驱动已标记" : "—";
-  if (elements.overviewBlocks)
-    elements.overviewBlocks.textContent = actionSummary.blocks.slice(0, 2).join(" · ") || "无";
-  if (elements.overviewBlocksHint)
-    elements.overviewBlocksHint.textContent = actionSummary.blocks.length ? "详见风险注记" : "无阻断";
+  if (elements.runMetaTrust) {
+    elements.runMetaTrust.textContent = health.level === "danger" ? "FAIL" : health.level === "warn" ? "WARN" : "OK";
+    elements.runMetaTrust.className = health.level === "danger" ? "danger" : health.level === "warn" ? "warn" : "ok";
+  }
 
   if (elements.actionSummary) elements.actionSummary.textContent = actionSummary.action;
   if (elements.actionDetail) elements.actionDetail.textContent = actionSummary.detail;

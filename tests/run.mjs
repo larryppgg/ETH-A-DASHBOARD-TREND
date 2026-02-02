@@ -229,7 +229,7 @@ function testRenderOutputInspector() {
   assert(elements.gateInspector.innerHTML.includes("G0"), "审计面板应显示默认闸门详情");
 }
 
-function testStatusDetailUsesActionSummary() {
+function testStatusOverviewRenders() {
   const kanbanCol = createNode("div");
   const elements = {
     statusBadge: createNode(),
@@ -253,9 +253,6 @@ function testStatusDetailUsesActionSummary() {
     kanbanB: createNode(),
     kanbanC: createNode(),
     statusOverview: createNode(),
-    statusDetailA: createNode(),
-    statusDetailB: createNode(),
-    statusDetailC: createNode(),
   };
   global.document = {
     body: { classList: { add() {}, remove() {} } },
@@ -272,7 +269,7 @@ function testStatusDetailUsesActionSummary() {
   const output = runPipeline(baseInput());
   const record = { date: "2026-01-01", input: baseInput(), output };
   renderOutput(elements, record, [record]);
-  assert(elements.statusDetailB.innerHTML.includes("建议动作"), "状态详情应渲染建议动作");
+  assert(elements.statusOverview.innerHTML.includes("status-overview-bar"), "状态总览应渲染");
 }
 
 function testRenderCoverageMissing() {
@@ -320,8 +317,8 @@ function testNeedsAutoFetch() {
 function testLayoutSkeleton() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
   const ids = [
-    "healthBar",
     "runBar",
+    "runHealth",
     "runStageFetch",
     "runStageValidate",
     "runStageCompute",
@@ -331,15 +328,13 @@ function testLayoutSkeleton() {
     "runMetaTime",
     "runMetaDataTime",
     "runMetaSource",
+    "runMetaTrust",
     "healthFreshness",
     "timelineOverview",
     "timelineRange",
     "timelineLabel",
     "timelineLatestBtn",
     "timelineLegend",
-    "overviewAction",
-    "overviewDrivers",
-    "overviewBlocks",
     "actionSummary",
     "counterfactuals",
     "missingImpact",
@@ -353,9 +348,6 @@ function testLayoutSkeleton() {
     "gateChain",
     "auditVisual",
     "statusOverview",
-    "statusDetailA",
-    "statusDetailB",
-    "statusDetailC",
   ];
   ids.forEach((id) => {
     assert(html.includes(`id=\"${id}\"`), `布局应包含 ${id}`);
@@ -439,6 +431,7 @@ function testTimelineIncludesEthPriceSeries() {
   ];
   renderTimelineOverview(container, legend, history, "2026-01-01");
   assert(legend.innerHTML.includes("ETH 现货"), "时间轴图例应包含 ETH 现货");
+  assert(!legend.innerHTML.includes("FoF"), "时间轴图例默认不显示 FoF");
 }
 
 function testEthTooltipFormat() {
@@ -698,7 +691,7 @@ async function run() {
   testMacroEtfPenalty();
   testDistributionBoost();
   testRenderOutputInspector();
-  testStatusDetailUsesActionSummary();
+  testStatusOverviewRenders();
   testRenderCoverageMissing();
   testBuildAiPayload();
   testShouldAutoRun();
