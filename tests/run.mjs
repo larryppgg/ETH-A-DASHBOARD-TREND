@@ -12,7 +12,7 @@ import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline
 import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/cache.js";
 import { buildDateWindow } from "../src/ui/historyWindow.js";
 import { formatUsd, buildTooltipText } from "../src/ui/formatters.js";
-import { buildCombinedInput } from "../src/ui/inputBuilder.js";
+import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder.js";
 import { createEtaTimer } from "../src/ui/etaTimer.js";
 import { buildOverallPrompt } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
@@ -475,6 +475,19 @@ function testBuildCombinedInputPrefersPayloadMissing() {
   assert(Array.isArray(combined.__missing) && combined.__missing.length === 0, "应使用 payload.missing");
 }
 
+function testRefreshMissingFieldsOverridesStaleMissing() {
+  const input = {
+    ism: 233,
+    mappingRatioDown: true,
+    rsdScore: 6,
+    stablecoin30d: -0.5,
+    __missing: ["ism", "mappingRatioDown", "rsdScore", "stablecoin30d"],
+  };
+  const missing = refreshMissingFields(input, ["ism", "mappingRatioDown", "rsdScore", "stablecoin30d"]);
+  assert(missing.length === 0, "应清理已补齐字段的缺失标记");
+  assert(Array.isArray(input.__missing) && input.__missing.length === 0, "输入应更新 __missing");
+}
+
 function testTimelineRangeLatestAtRight() {
   const timelineRange = createNode("input");
   timelineRange.value = "0";
@@ -695,6 +708,7 @@ async function run() {
   testEthTooltipFormat();
   testTooltipIncludesDateAndPrice();
   testBuildCombinedInputPrefersPayloadMissing();
+  testRefreshMissingFieldsOverridesStaleMissing();
   testGateChainHasNodes();
   testEtaTimerTotals();
   await testRunTodayCompletesBeforeAi();

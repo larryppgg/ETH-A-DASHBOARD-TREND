@@ -11,3 +11,10 @@ export function buildCombinedInput(payload, templateInput) {
   };
   return combined;
 }
+
+export function refreshMissingFields(input, schemaKeys = []) {
+  if (!input || !Array.isArray(schemaKeys)) return [];
+  const missing = schemaKeys.filter((key) => input[key] === null || input[key] === undefined);
+  input.__missing = missing;
+  return missing;
+}

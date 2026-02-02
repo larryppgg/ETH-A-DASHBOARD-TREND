@@ -9,7 +9,7 @@ import { cacheHistory, loadCachedHistory, resetCachedHistory } from "./ui/cache.
 import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline.js";
 import { buildDateWindow } from "./ui/historyWindow.js";
 import { buildTooltipText } from "./ui/formatters.js";
-import { buildCombinedInput } from "./ui/inputBuilder.js";
+import { buildCombinedInput, refreshMissingFields } from "./ui/inputBuilder.js";
 import { createEtaTimer } from "./ui/etaTimer.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
@@ -565,6 +565,7 @@ async function runToday(options = {}) {
     }
     const history = loadHistory();
     const normalizedInput = normalizeInputForRun({ ...customInput, date: targetDate }, history);
+    refreshMissingFields(normalizedInput, Object.keys(inputSchema));
     const errors = validateInput(normalizedInput);
     if (errors.length) {
       const missing = normalizedInput.__missing || [];
@@ -732,6 +733,7 @@ async function selectHistoryDate(date) {
   }
   const combined = buildCombinedInput(payload, templateInput);
   const normalized = normalizeInputForRun({ ...combined, date }, history);
+  refreshMissingFields(normalized, Object.keys(inputSchema));
   const errors = validateInput(normalized);
   if (errors.length) {
     showError(errors);
