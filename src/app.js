@@ -81,6 +81,15 @@ const elements = {
   workflowValidate: document.getElementById("workflowValidate"),
   workflowRun: document.getElementById("workflowRun"),
   workflowReplay: document.getElementById("workflowReplay"),
+  runStageFetch: document.getElementById("runStageFetch"),
+  runStageValidate: document.getElementById("runStageValidate"),
+  runStageCompute: document.getElementById("runStageCompute"),
+  runStageReplay: document.getElementById("runStageReplay"),
+  runStageAi: document.getElementById("runStageAi"),
+  runMetaId: document.getElementById("runMetaId"),
+  runMetaTime: document.getElementById("runMetaTime"),
+  runMetaDataTime: document.getElementById("runMetaDataTime"),
+  runMetaSource: document.getElementById("runMetaSource"),
   timelineOverview: document.getElementById("timelineOverview"),
   timelineLegend: document.getElementById("timelineLegend"),
   timelineRange: document.getElementById("timelineRange"),
@@ -215,9 +224,11 @@ async function checkAiStatus() {
 async function runAi(record) {
   const enabled = await checkAiStatus();
   if (!enabled) {
+    setRunStage(elements.runStageAi, "跳过");
     return;
   }
   setAiStatus("AI 生成中...");
+  setRunStage(elements.runStageAi, "生成中");
   const payload = buildAiPayload(record);
   const aiState = {
     summary: "生成中...",
@@ -327,6 +338,7 @@ async function runAi(record) {
 
   await Promise.all([summaryPromise, overallPromise]);
   setAiStatus(errorCount ? "AI 部分完成" : "AI 已生成");
+  setRunStage(elements.runStageAi, errorCount ? "部分完成" : "完成");
 }
 
 function parseInputJson(text) {
@@ -514,6 +526,7 @@ function renderSnapshot(history, date) {
   const record = pickRecordByDate(history, resolvedDate);
   if (record) {
     renderOutput(elements, record, history);
+    updateRunMetaFromRecord(record);
     if (elements.inputJson) {
       elements.inputJson.value = JSON.stringify(record.input, null, 2);
     }
@@ -533,17 +546,69 @@ function setWorkflowStatus(target, text) {
   target.textContent = text;
 }
 
+function formatRunTimestamp(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mi = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+function setRunMeta(meta) {
+  if (!meta) return;
+  if (elements.runMetaId && meta.id) elements.runMetaId.textContent = meta.id;
+  if (elements.runMetaTime && meta.time) elements.runMetaTime.textContent = meta.time;
+  if (elements.runMetaDataTime && meta.dataTime) elements.runMetaDataTime.textContent = meta.dataTime;
+  if (elements.runMetaSource && meta.source) elements.runMetaSource.textContent = meta.source;
+}
+
+function updateRunMetaFromRecord(record) {
+  if (!record) return;
+  const input = record.input || {};
+  const generatedAt = input.__generatedAt || input.generatedAt;
+  const proxyTrace = input.__proxyTrace || input.proxyTrace || [];
+  let proxyText = "未知";
+  if (proxyTrace.length) {
+    const allOk = proxyTrace.every((item) => item.ok);
+    proxyText = allOk
+      ? `OK (${proxyTrace.map((item) => item.proxy).join("/")})`
+      : `WARN (${proxyTrace.map((item) => item.proxy).join("/")})`;
+  }
+  setRunMeta({
+    dataTime: generatedAt ? formatRunTimestamp(generatedAt) : "--",
+    source: proxyText,
+  });
+}
+
+function setRunStage(target, text) {
+  if (!target) return;
+  target.textContent = text;
+}
+
 async function runToday(options = {}) {
   elements.runBtn.disabled = true;
   elements.runBtn.textContent = "运行中...";
   const targetDate = elements.runDate.value || dateKey();
   try {
+    const runId = `RUN-${Date.now()}`;
+    setRunMeta({ id: runId, time: formatRunTimestamp(Date.now()) });
+    setRunStage(elements.runStageFetch, "待运行");
+    setRunStage(elements.runStageValidate, "待运行");
+    setRunStage(elements.runStageCompute, "待运行");
+    setRunStage(elements.runStageReplay, "待运行");
+    setRunStage(elements.runStageAi, "待运行");
     etaTimer.start("total", Date.now());
     const { mode = "auto" } = options;
     let customInput = loadCustomInput();
     if (mode === "auto") {
       showRunStatus("启动自动抓取...");
       setWorkflowStatus(elements.workflowFetch, "抓取中");
+      setRunStage(elements.runStageFetch, "抓取中");
       etaTimer.start("fetch", Date.now());
       const fetched = await autoFetch();
       etaTimer.end("fetch", Date.now());
@@ -552,16 +617,20 @@ async function runToday(options = {}) {
         showError(["未提供输入数据，请先粘贴 JSON 或插入模板并填写。"]);
         showRunStatus("运行失败：未获取到数据");
         setWorkflowStatus(elements.workflowFetch, "失败");
+        setRunStage(elements.runStageFetch, "失败");
         return;
       }
       customInput = fetched;
       setWorkflowStatus(elements.workflowFetch, "完成");
+      setRunStage(elements.runStageFetch, "完成");
     } else if (needsAutoFetch(customInput, Object.keys(inputSchema))) {
       showRunStatus("输入不完整，请先补齐或使用自动抓取。");
       setWorkflowStatus(elements.workflowFetch, "跳过");
+      setRunStage(elements.runStageFetch, "跳过");
     } else {
       showRunStatus("使用已填输入...");
       setWorkflowStatus(elements.workflowFetch, "跳过");
+      setRunStage(elements.runStageFetch, "跳过");
     }
     const history = loadHistory();
     const normalizedInput = normalizeInputForRun({ ...customInput, date: targetDate }, history);
@@ -573,6 +642,7 @@ async function runToday(options = {}) {
       showError(errorText);
       showRunStatus("运行失败：字段不完整");
       setWorkflowStatus(elements.workflowValidate, "失败");
+      setRunStage(elements.runStageValidate, "失败");
       return;
     }
     if ("__sources" in normalizedInput) {
@@ -581,6 +651,7 @@ async function runToday(options = {}) {
         showError([`仍缺字段：${missing.join(", ")}`]);
         showRunStatus("运行失败：缺失字段");
         setWorkflowStatus(elements.workflowValidate, "失败");
+        setRunStage(elements.runStageValidate, "失败");
         return;
       }
     }
@@ -588,6 +659,8 @@ async function runToday(options = {}) {
     showRunStatus("计算中...");
     setWorkflowStatus(elements.workflowValidate, "通过");
     setWorkflowStatus(elements.workflowRun, "计算中");
+    setRunStage(elements.runStageValidate, "通过");
+    setRunStage(elements.runStageCompute, "计算中");
     etaTimer.start("compute", Date.now());
     const input = { ...normalizedInput };
     const output = runPipeline(input);
@@ -598,10 +671,13 @@ async function runToday(options = {}) {
     updated.push(record);
     saveHistory(updated);
     renderSnapshot(updated, targetDate);
+    updateRunMetaFromRecord(record);
     etaTimer.start("ai", Date.now());
     showRunStatus("完成");
     setWorkflowStatus(elements.workflowRun, "完成");
     setWorkflowStatus(elements.workflowReplay, "可回放");
+    setRunStage(elements.runStageCompute, "完成");
+    setRunStage(elements.runStageReplay, "可回放");
     runAi(record)
       .catch(() => {})
       .finally(() => {
@@ -716,11 +792,18 @@ async function selectHistoryDate(date) {
   const existing = history.find((item) => item.date === date);
   if (existing) {
     renderSnapshot(history, date);
+    updateRunMetaFromRecord(existing);
     setHistoryHint("已载入本地快照");
     return;
   }
   etaTimer.start("total", Date.now());
   etaTimer.start("fetch", Date.now());
+  setRunMeta({ id: `HIS-${date}`, time: formatRunTimestamp(Date.now()) });
+  setRunStage(elements.runStageFetch, "抓取中");
+  setRunStage(elements.runStageValidate, "待运行");
+  setRunStage(elements.runStageCompute, "待运行");
+  setRunStage(elements.runStageReplay, "待运行");
+  setRunStage(elements.runStageAi, "待运行");
   setHistoryHint("抓取中...");
   const payload = await fetchHistoryDate(date);
   etaTimer.end("fetch", Date.now());
@@ -728,6 +811,7 @@ async function selectHistoryDate(date) {
   if (!payload) {
     etaTimer.end("total", Date.now());
     updateEtaDisplay();
+    setRunStage(elements.runStageFetch, "失败");
     setHistoryHint("抓取失败");
     return;
   }
@@ -738,9 +822,12 @@ async function selectHistoryDate(date) {
   if (errors.length) {
     showError(errors);
     setHistoryHint("数据不完整，无法回放");
+    setRunStage(elements.runStageValidate, "失败");
     return;
   }
   etaTimer.start("compute", Date.now());
+  setRunStage(elements.runStageValidate, "通过");
+  setRunStage(elements.runStageCompute, "计算中");
   const output = runPipeline(normalized);
   etaTimer.end("compute", Date.now());
   updateEtaDisplay();
@@ -749,7 +836,10 @@ async function selectHistoryDate(date) {
   updated.push(record);
   saveHistory(updated);
   renderSnapshot(updated, date);
+  updateRunMetaFromRecord(record);
   etaTimer.start("ai", Date.now());
+  setRunStage(elements.runStageCompute, "完成");
+  setRunStage(elements.runStageReplay, "可回放");
   await runAi(record);
   etaTimer.end("ai", Date.now());
   etaTimer.end("total", Date.now());

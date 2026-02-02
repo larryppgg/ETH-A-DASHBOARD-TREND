@@ -321,6 +321,16 @@ function testLayoutSkeleton() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
   const ids = [
     "healthBar",
+    "runBar",
+    "runStageFetch",
+    "runStageValidate",
+    "runStageCompute",
+    "runStageReplay",
+    "runStageAi",
+    "runMetaId",
+    "runMetaTime",
+    "runMetaDataTime",
+    "runMetaSource",
     "healthFreshness",
     "timelineOverview",
     "timelineRange",

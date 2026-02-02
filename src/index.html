@@ -52,6 +52,55 @@
         </div>
       </section>
 
+      <section class="panel run-bar" id="runBar">
+        <div class="run-bar-header">
+          <div>
+            <div class="run-bar-title">运行状态</div>
+            <div class="run-bar-sub">抓取 → 校验 → 计算 → 回放 → AI</div>
+          </div>
+          <div class="run-bar-meta">
+            <div class="run-meta">
+              <span>Run ID</span>
+              <strong id="runMetaId">--</strong>
+            </div>
+            <div class="run-meta">
+              <span>运行时间</span>
+              <strong id="runMetaTime">--</strong>
+            </div>
+            <div class="run-meta">
+              <span>数据时间</span>
+              <strong id="runMetaDataTime">--</strong>
+            </div>
+            <div class="run-meta">
+              <span>来源</span>
+              <strong id="runMetaSource">--</strong>
+            </div>
+          </div>
+        </div>
+        <div class="run-bar-steps">
+          <div class="run-step">
+            <span>抓取</span>
+            <strong id="runStageFetch">待运行</strong>
+          </div>
+          <div class="run-step">
+            <span>校验</span>
+            <strong id="runStageValidate">待运行</strong>
+          </div>
+          <div class="run-step">
+            <span>计算</span>
+            <strong id="runStageCompute">待运行</strong>
+          </div>
+          <div class="run-step">
+            <span>回放</span>
+            <strong id="runStageReplay">待运行</strong>
+          </div>
+          <div class="run-step">
+            <span>AI</span>
+            <strong id="runStageAi">待运行</strong>
+          </div>
+        </div>
+      </section>
+
       <section class="panel timeline-panel">
         <div class="panel-title">时间轴总览</div>
         <div class="timeline-overview" id="timelineOverview"></div>
