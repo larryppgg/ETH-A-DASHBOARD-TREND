@@ -1095,6 +1095,11 @@ def main(argv=None):
     )
     liquidation = safe_call("Coinglass(liquidation)", fetch_coinglass_liquidations, ["liquidationUsd"])
     cex = safe_call("DefiLlama(CEX)", fetch_defillama_cex, ["exchBalanceTrend", "exchStableDelta"])
+    if cex[2]:
+        proxy = safe_call("CoinGecko(CEX proxy)", fetch_exchange_proxy, cex[2])
+        if proxy[0]:
+            errors.append("CEX: DefiLlama unavailable, fallback to exchange proxy")
+            cex = proxy
     klines = safe_call(
         "CoinGecko(OHLC)",
         fetch_coingecko_ohlc,

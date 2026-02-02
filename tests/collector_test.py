@@ -29,13 +29,49 @@ class TestCollectorFetchJson(unittest.TestCase):
             patch("scripts.collector.fetch_farside", return_value=({}, {}, [])), \
             patch("scripts.collector.fetch_coingecko_market", return_value=({}, {}, [])), \
             patch("scripts.collector.fetch_coinglass_liquidations", return_value=({}, {}, [])), \
-            patch("scripts.collector.fetch_defillama_cex", return_value=({}, {}, [])), \
+            patch(
+                "scripts.collector.fetch_defillama_cex",
+                return_value=({"exchBalanceTrend": 1, "exchStableDelta": 2}, {}, []),
+            ), \
             patch("scripts.collector.fetch_coingecko_ohlc", return_value=({}, {}, [])), \
             patch("scripts.collector.fetch_exchange_proxy") as proxy, \
             patch("builtins.open", mock_open()):
             collector.main()
 
         self.assertFalse(proxy.called, "不应调用估算型 exchange_proxy")
+
+    def test_cex_fallback_exchange_proxy_when_missing(self):
+        captured = {}
+
+        def fake_dump(payload, _fp, ensure_ascii=False, indent=2):
+            captured.update(payload)
+
+        with patch("scripts.collector.fetch_macro", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_defillama", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_farside", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coingecko_market", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coinglass_liquidations", return_value=({}, {}, [])), \
+            patch(
+                "scripts.collector.fetch_defillama_cex",
+                return_value=({}, {}, ["exchBalanceTrend", "exchStableDelta"]),
+            ), \
+            patch(
+                "scripts.collector.fetch_exchange_proxy",
+                return_value=(
+                    {"exchBalanceTrend": 3, "exchStableDelta": 4},
+                    {"exchBalanceTrend": "proxy", "exchStableDelta": "proxy"},
+                    [],
+                ),
+            ), \
+            patch("scripts.collector.fetch_coingecko_ohlc", return_value=({}, {}, [])), \
+            patch("builtins.open", mock_open()), \
+            patch("json.dump", fake_dump):
+            collector.main()
+
+        self.assertIn("exchBalanceTrend", captured.get("data", {}), "CEX 缺失时应回退 proxy")
+        self.assertIn("exchStableDelta", captured.get("data", {}), "CEX 缺失时应回退 proxy")
+        self.assertNotIn("exchBalanceTrend", captured.get("missing", []), "回退后不应仍缺")
+        self.assertNotIn("exchStableDelta", captured.get("missing", []), "回退后不应仍缺")
 
     def test_parse_farside_table(self):
         sample = (
