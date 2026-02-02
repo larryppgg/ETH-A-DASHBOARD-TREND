@@ -7,7 +7,12 @@ import { evalLiquidity } from "../src/engine/rules/liquidity.js";
 import { evalDanger } from "../src/engine/rules/danger.js";
 import { runPipeline } from "../src/engine/pipeline.js";
 import { renderCoverage, renderOutput, renderTimelineOverview, renderGateChain } from "../src/ui/render.js";
-import { buildActionSummary, buildHealthSummary, buildMissingImpact } from "../src/ui/summary.js";
+import {
+  buildActionSummary,
+  buildHealthSummary,
+  buildMissingImpact,
+  deriveTrustLevel,
+} from "../src/ui/summary.js";
 import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline.js";
 import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/cache.js";
 import { buildDateWindow } from "../src/ui/historyWindow.js";
@@ -396,6 +401,14 @@ function testAppDoesNotImportRefreshMissingFields() {
 function testSummaryBuilders() {
   const health = buildHealthSummary({ __missing: ["dxy5d"], __errors: [] });
   assert(health.level === "warn", "健康摘要应识别缺失字段");
+  const softTrust = deriveTrustLevel({ __missing: [], __errors: ["fallback to jina"] });
+  assert(softTrust.level === "warn", "仅软错误时可信度应为 WARN");
+  const fresh = buildHealthSummary({
+    __missing: [],
+    __errors: [],
+    __generatedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+  });
+  assert(fresh.freshnessText.includes("距今"), "数据新鲜度应包含距今提示");
   const output = runPipeline(baseInput());
   const action = buildActionSummary(output);
   assert(action.action.includes("β"), "行动摘要应包含 beta 信息");

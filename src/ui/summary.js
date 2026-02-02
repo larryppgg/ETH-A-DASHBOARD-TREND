@@ -18,14 +18,35 @@ function formatTimestamp(value) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
 
-export function buildHealthSummary(input = {}, meta = {}) {
+function formatRelativeTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const diffMs = Math.max(0, Date.now() - date.getTime());
+  const diffMinutes = Math.floor(diffMs / 60000);
+  if (diffMinutes < 1) return "刚刚";
+  if (diffMinutes < 60) return `${diffMinutes}m`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 48) return `${diffHours}h`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d`;
+}
+
+export function deriveTrustLevel(input = {}) {
   const missing = input.__missing || [];
   const errors = input.__errors || [];
+  const softOnly =
+    errors.length > 0 &&
+    errors.every((err) => /fallback|blocked|cloudflare|rate limit/i.test(err));
+  if (errors.length && !softOnly) return { level: "danger", label: "FAIL" };
+  if (missing.length || softOnly) return { level: "warn", label: "WARN" };
+  return { level: "ok", label: "OK" };
+}
+
+export function buildHealthSummary(input = {}, meta = {}) {
   const generatedAt = input.__generatedAt || input.generatedAt;
   const proxyTrace = input.__proxyTrace || input.proxyTrace || [];
-  let level = "ok";
-  if (errors.length) level = "danger";
-  else if (missing.length) level = "warn";
+  const trust = deriveTrustLevel(input);
 
   let proxyText = "未知";
   if (proxyTrace.length) {
@@ -36,13 +57,15 @@ export function buildHealthSummary(input = {}, meta = {}) {
   }
 
   return {
-    level,
-    missingCount: missing.length,
-    errorsCount: errors.length,
-    missingList: missing,
-    errorsList: errors,
-    freshnessText: generatedAt ? `更新 ${formatTimestamp(generatedAt)}` : "更新 未知",
-    missingText: missing.length ? `${missing.length} 项` : "无",
+    level: trust.level,
+    missingCount: (input.__missing || []).length,
+    errorsCount: (input.__errors || []).length,
+    missingList: input.__missing || [],
+    errorsList: input.__errors || [],
+    freshnessText: generatedAt
+      ? `更新 ${formatTimestamp(generatedAt)}（距今 ${formatRelativeTime(generatedAt)}）`
+      : "更新 未知",
+    missingText: (input.__missing || []).length ? `${(input.__missing || []).length} 项` : "无",
     proxyText,
     aiText: meta.aiStatus || "未连接",
   };

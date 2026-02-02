@@ -9,6 +9,7 @@ import { cacheHistory, loadCachedHistory, resetCachedHistory } from "./ui/cache.
 import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline.js";
 import { buildDateWindow } from "./ui/historyWindow.js";
 import { buildTooltipText } from "./ui/formatters.js";
+import { deriveTrustLevel } from "./ui/summary.js";
 import { buildCombinedInput } from "./ui/inputBuilder.js";
 import { createEtaTimer } from "./ui/etaTimer.js";
 
@@ -584,22 +585,12 @@ function updateRunMetaFromRecord(record) {
       ? `OK (${proxyTrace.map((item) => item.proxy).join("/")})`
       : `WARN (${proxyTrace.map((item) => item.proxy).join("/")})`;
   }
-  const missing = input.__missing || [];
-  const errors = input.__errors || [];
-  let trust = "OK";
-  let trustLevel = "ok";
-  if (errors.length) {
-    trust = "FAIL";
-    trustLevel = "danger";
-  } else if (missing.length) {
-    trust = "WARN";
-    trustLevel = "warn";
-  }
+  const trust = deriveTrustLevel(input);
   setRunMeta({
-    dataTime: generatedAt ? formatRunTimestamp(generatedAt) : "--",
+    dataTime: generatedAt ? `抓取 ${formatRunTimestamp(generatedAt)}` : "--",
     source: proxyText,
-    trust,
-    trustLevel,
+    trust: trust.label,
+    trustLevel: trust.level,
   });
 }
 
@@ -614,7 +605,7 @@ async function runToday(options = {}) {
   const targetDate = elements.runDate.value || dateKey();
   try {
     const runId = `RUN-${Date.now()}`;
-    setRunMeta({ id: runId, time: formatRunTimestamp(Date.now()) });
+    setRunMeta({ id: runId, time: `本地计算 ${formatRunTimestamp(Date.now())}` });
     setRunStage(elements.runStageFetch, "待运行");
     setRunStage(elements.runStageValidate, "待运行");
     setRunStage(elements.runStageCompute, "待运行");
