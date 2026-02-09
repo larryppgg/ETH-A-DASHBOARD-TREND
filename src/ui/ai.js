@@ -26,6 +26,10 @@ export function renderAiPanel(container, payload) {
     .join("");
   container.innerHTML = `
     <div class="ai-summary">
+      <div class="ai-summary-title">逐指标解读位置</div>
+      <div class="ai-summary-body">每个指标的 AI 解读已移动到下方“数据覆盖矩阵”对应指标行内。</div>
+    </div>
+    <div class="ai-summary">
       <div class="ai-summary-title">总览解读</div>
       <div class="ai-summary-body">
         <span class="ai-state ${summaryStatus}">${summaryStatus}</span>

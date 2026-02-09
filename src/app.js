@@ -4,22 +4,32 @@ import { renderOutput, renderTimelineOverview } from "./ui/render.js";
 import { buildAiPayload } from "./ai/payload.js";
 import { renderAiPanel, renderAiStatus } from "./ui/ai.js";
 import { shouldAutoRun } from "./autoRun.js";
-import { needsAutoFetch } from "./inputPolicy.js";
+import {
+  needsAutoFetch,
+  classifyFieldFreshness,
+  pickHistoryBackfillCandidate,
+  applyHalfLifeGate,
+  mergeInputsPreferFresh,
+} from "./inputPolicy.js";
 import { cacheHistory, loadCachedHistory, resetCachedHistory } from "./ui/cache.js";
 import { buildTimelineIndex, nearestDate, pickRecordByDate } from "./ui/timeline.js";
 import { buildDateWindow } from "./ui/historyWindow.js";
 import { buildTooltipText } from "./ui/formatters.js";
 import { buildCombinedInput } from "./ui/inputBuilder.js";
 import { createEtaTimer } from "./ui/etaTimer.js";
+import { fieldMeta } from "./ui/fieldMeta.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
 const inputKey = "eth_a_dashboard_custom_input";
 const aiKey = "eth_a_dashboard_ai_cache_v1";
 const aiStatusKey = "eth_a_dashboard_ai_status_v1";
+const viewModeKey = "eth_a_dashboard_view_mode_v1";
 
 const elements = {
   runBtn: document.getElementById("runBtn"),
   clearBtn: document.getElementById("clearBtn"),
+  viewPlainBtn: document.getElementById("viewPlainBtn"),
+  viewExpertBtn: document.getElementById("viewExpertBtn"),
   statusBadge: document.getElementById("statusBadge"),
   statusTitle: document.getElementById("statusTitle"),
   statusSub: document.getElementById("statusSub"),
@@ -41,6 +51,9 @@ const elements = {
   betaChart: document.getElementById("betaChart"),
   confidenceChart: document.getElementById("confidenceChart"),
   fofChart: document.getElementById("fofChart"),
+  betaTrendMeta: document.getElementById("betaTrendMeta"),
+  confidenceTrendMeta: document.getElementById("confidenceTrendMeta"),
+  fofTrendMeta: document.getElementById("fofTrendMeta"),
   kanbanA: document.getElementById("kanbanA"),
   kanbanB: document.getElementById("kanbanB"),
   kanbanC: document.getElementById("kanbanC"),
@@ -49,6 +62,7 @@ const elements = {
   templateBtn: document.getElementById("templateBtn"),
   validateBtn: document.getElementById("validateBtn"),
   fetchBtn: document.getElementById("fetchBtn"),
+  forceFetchBtn: document.getElementById("forceFetchBtn"),
   sourceStatus: document.getElementById("sourceStatus"),
   inputError: document.getElementById("inputError"),
   coverageList: document.getElementById("coverageList"),
@@ -62,6 +76,8 @@ const elements = {
   healthMissing: document.getElementById("healthMissing"),
   healthProxy: document.getElementById("healthProxy"),
   healthAi: document.getElementById("healthAi"),
+  healthTimeliness: document.getElementById("healthTimeliness"),
+  healthQuality: document.getElementById("healthQuality"),
   statusOverview: document.getElementById("statusOverview"),
   etaValue: document.getElementById("etaValue"),
   actionSummary: document.getElementById("actionSummary"),
@@ -91,7 +107,56 @@ const elements = {
   historyRange: document.getElementById("historyRange"),
   historyDate: document.getElementById("historyDate"),
   historyHint: document.getElementById("historyHint"),
+  evalPanel: document.getElementById("evalPanel"),
 };
+
+function cloneJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return { ...value };
+  }
+}
+
+function normalizeViewMode(mode) {
+  return mode === "expert" ? "expert" : "plain";
+}
+
+function setButtonActive(button, active) {
+  if (!button || !button.classList) return;
+  if (active) button.classList.add("active");
+  else button.classList.remove("active");
+}
+
+function applyViewMode(mode) {
+  const resolved = normalizeViewMode(mode);
+  if (typeof document !== "undefined" && document.body) {
+    if (!document.body.dataset) {
+      // For test harness where dataset may be missing.
+      document.body.dataset = {};
+    }
+    document.body.dataset.viewMode = resolved;
+  }
+  setButtonActive(elements.viewPlainBtn, resolved === "plain");
+  setButtonActive(elements.viewExpertBtn, resolved === "expert");
+}
+
+function setViewMode(mode, { rerender = false } = {}) {
+  const resolved = normalizeViewMode(mode);
+  try {
+    localStorage.setItem(viewModeKey, resolved);
+  } catch {}
+  applyViewMode(resolved);
+  if (rerender) {
+    const history = loadHistory();
+    if (history.length) {
+      renderSnapshot(history, selectedDate || timelineIndex.latestDate);
+    } else {
+      renderTimeline([], null);
+    }
+  }
+}
 
 function refreshMissingFields(input, schemaKeys = []) {
   if (!input || !Array.isArray(schemaKeys)) {
@@ -100,6 +165,93 @@ function refreshMissingFields(input, schemaKeys = []) {
   const missing = schemaKeys.filter((key) => input[key] === null || input[key] === undefined);
   input.__missing = missing;
   return missing;
+}
+
+function coerceInputTypes(input) {
+  if (!input) return input;
+  Object.entries(inputSchema).forEach(([key, type]) => {
+    const value = input[key];
+    if (value === null || value === undefined) return;
+    if (type === "number" && typeof value !== "number") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) input[key] = parsed;
+    }
+    if (type === "boolean" && typeof value !== "boolean") {
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (normalized === "true" || normalized === "1") input[key] = true;
+        if (normalized === "false" || normalized === "0") input[key] = false;
+      } else if (typeof value === "number") {
+        if (value === 1) input[key] = true;
+        if (value === 0) input[key] = false;
+      }
+    }
+  });
+  return input;
+}
+
+function hydrateFieldFreshness(input, asOfDate) {
+  if (!input) return;
+  input.__fieldFreshness = input.__fieldFreshness || {};
+  Object.keys(inputSchema).forEach((key) => {
+    const observedAt =
+      input.__fieldObservedAt?.[key] || input.__fieldUpdatedAt?.[key] || input.__generatedAt || null;
+    const freshness = classifyFieldFreshness(observedAt, asOfDate || input.date || dateKey(), key);
+    input.__fieldFreshness[key] = freshness;
+  });
+}
+
+function backfillMissingFromHistory(input, history, targetDate = null) {
+  if (!input) return [];
+  const filled = [];
+  const staleBlocked = [];
+  Object.entries(inputSchema).forEach(([key, type]) => {
+    if (input[key] !== null && input[key] !== undefined) return;
+    const candidate = pickHistoryBackfillCandidate(history, key, targetDate || input.date || dateKey());
+    if (!candidate) {
+      const staleCandidate = pickHistoryBackfillCandidate(
+        history,
+        key,
+        targetDate || input.date || dateKey(),
+        { allowStale: true }
+      );
+      if (staleCandidate?.freshness?.level === "stale") {
+        staleBlocked.push(key);
+      }
+      return;
+    }
+    if (typeof candidate.value !== type) return;
+    input[key] = candidate.value;
+    filled.push(key);
+    input.__sources = input.__sources || {};
+    input.__fieldObservedAt = input.__fieldObservedAt || {};
+    input.__fieldFetchedAt = input.__fieldFetchedAt || {};
+    input.__fieldUpdatedAt = input.__fieldUpdatedAt || {};
+    input.__fieldFreshness = input.__fieldFreshness || {};
+    if (!input.__sources[key]) {
+      input.__sources[key] = candidate.source || `History cache: ${candidate.date}`;
+    }
+    if (!input.__fieldObservedAt[key]) {
+      input.__fieldObservedAt[key] = candidate.observedAt || null;
+    }
+    if (!input.__fieldFetchedAt[key]) {
+      input.__fieldFetchedAt[key] = candidate.fetchedAt || candidate.observedAt || null;
+    }
+    if (!input.__fieldUpdatedAt[key]) {
+      input.__fieldUpdatedAt[key] = input.__fieldObservedAt[key] || null;
+    }
+    input.__fieldFreshness[key] = candidate.freshness || null;
+  });
+  hydrateFieldFreshness(input, targetDate || input.date || dateKey());
+  if (filled.length) {
+    input.__errors = Array.isArray(input.__errors) ? input.__errors : [];
+    input.__errors.push(`历史日期回抓：使用本地快照补齐字段 ${filled.join(", ")}`);
+  }
+  if (staleBlocked.length) {
+    input.__errors = Array.isArray(input.__errors) ? input.__errors : [];
+    input.__errors.push(`半衰期拦截：以下字段本地历史已过期，未回填 ${staleBlocked.join(", ")}`);
+  }
+  return filled;
 }
 
 const inputSchema = {
@@ -202,36 +354,138 @@ function setAiStatus(text) {
   }
 }
 
+function formatFieldValue(value, unit = "") {
+  if (value === null || value === undefined) return "缺失";
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "number") return `${value.toFixed(3)}${unit ? ` ${unit}` : ""}`;
+  return `${value}${unit ? ` ${unit}` : ""}`;
+}
+
+function buildLocalFieldInsight(field, record) {
+  const output = record?.output || {};
+  if (field.value === null || field.value === undefined) {
+    return `${field.label} 当前缺失，先补齐该指标再判断其对 ${output.state || "-"} 档位的影响。`;
+  }
+  const gateHint = field.gate ? `对应 ${field.gate} 闸门` : "对应策略闸门";
+  const stateHint =
+    output.state === "A"
+      ? "偏进攻"
+      : output.state === "B"
+      ? "偏防守"
+      : output.state === "C"
+      ? "偏避险"
+      : "当前态势";
+  return `${field.label} 当前为 ${formatFieldValue(field.value, field.unit)}，${gateHint}，用于${field.desc || "判断结构状态"}。该值对当前${stateHint}判断形成约束，后续重点观察其是否延续当前方向。`;
+}
+
+function aiCacheForDate(date) {
+  const cached = loadAiCache();
+  if (!cached) return null;
+  if (!date) return cached;
+  if (!cached.date) return cached;
+  return cached.date === date ? cached : null;
+}
+
+function applyCoverageFieldAi(aiPayload, date = selectedDate) {
+  if (!elements.coverageList) return;
+  const safePayload = aiPayload && (!date || !aiPayload.date || aiPayload.date === date) ? aiPayload : null;
+  const fieldMap = new Map(((safePayload && safePayload.fields) || []).map((item) => [item.key, item]));
+  const gateMap = new Map(((safePayload && safePayload.gates) || []).map((item) => [item.id, item]));
+  const nodes = elements.coverageList.querySelectorAll("[data-field-ai]");
+  nodes.forEach((node) => {
+    const key = node.getAttribute("data-field-ai");
+    const target = fieldMap.get(key);
+    const textNode = node.querySelector(".coverage-ai-text");
+    if (!textNode) return;
+    if (!target) {
+      node.setAttribute("data-state", "pending");
+      textNode.textContent = "等待生成...";
+      return;
+    }
+    node.setAttribute("data-state", target.status || "pending");
+    textNode.textContent = target.text || "等待生成...";
+  });
+
+  const gateNodes = elements.coverageList.querySelectorAll("[data-gate-ai]");
+  gateNodes.forEach((node) => {
+    const gateId = node.getAttribute("data-gate-ai");
+    const target = gateMap.get(gateId);
+    const textNode = node.querySelector(".coverage-ai-text");
+    if (!textNode) return;
+    if (!target) {
+      node.setAttribute("data-state", "pending");
+      textNode.textContent = "等待生成...";
+      return;
+    }
+    node.setAttribute("data-state", target.status || "pending");
+    textNode.textContent = target.text || "等待生成...";
+  });
+}
+
+function buildOfflineAiState(record, payload) {
+  const output = record?.output || {};
+  const reasons = (output.reasonsTop3 || []).map((item) => item.text).join(" / ") || "暂无";
+  const risks = (output.riskNotes || []).join(" / ") || "暂无";
+  const action = `${output.state || "-"} / β ${output.beta ?? "--"} / β_cap ${output.betaCap ?? "--"}`;
+  return {
+    date: record?.date || "",
+    summary: `本地离线解读：当前状态 ${output.state || "-"}，核心驱动为 ${reasons}。`,
+    summaryStatus: "done",
+    overall: `本地离线总结：建议动作 ${action}；主要风险 ${risks}。`,
+    overallStatus: "done",
+    gates: (output.gates || []).map((gate) => ({
+      id: gate.id,
+      name: gate.name,
+      text: `${gate.note || "暂无"}；状态 ${String(gate.status || "--").toUpperCase()}`,
+      status: "done",
+    })),
+    fields: (payload?.fields || []).map((field) => ({
+      key: field.key,
+      label: field.label,
+      gate: field.gate,
+      text: buildLocalFieldInsight(field, record),
+      status: "done",
+    })),
+  };
+}
+
 async function checkAiStatus() {
   try {
     const resp = await fetch("/ai/status");
     if (!resp.ok) {
-      setAiStatus("AI 未连接");
+      setAiStatus("AI 离线解读（网络不可达）");
       return false;
     }
     const payload = await resp.json();
     if (!payload.enabled) {
-      setAiStatus("AI 未启用");
+      setAiStatus("AI 离线解读（本地）");
       return false;
     }
     setAiStatus("AI 已连接");
     return true;
   } catch (error) {
-    setAiStatus("AI 未连接");
+    setAiStatus("AI 离线解读（网络不可达）");
     return false;
   }
 }
 
 async function runAi(record) {
+  const payload = buildAiPayload(record);
+  const offline = buildOfflineAiState(record, payload);
+  saveAiCache(offline);
+  renderAiPanel(elements.aiPanel, offline);
+  applyCoverageFieldAi(offline, record.date);
+
   const enabled = await checkAiStatus();
   if (!enabled) {
-    setRunStage(elements.runStageAi, "跳过");
+    setAiStatus("AI 离线解读（本地）");
+    setRunStage(elements.runStageAi, "完成(离线)");
     return;
   }
   setAiStatus("AI 生成中...");
   setRunStage(elements.runStageAi, "生成中");
-  const payload = buildAiPayload(record);
   const aiState = {
+    date: payload.date,
     summary: "生成中...",
     summaryStatus: "pending",
     overall: "生成中...",
@@ -242,14 +496,23 @@ async function runAi(record) {
       text: "生成中...",
       status: "pending",
     })),
+    fields: payload.fields.map((field) => ({
+      key: field.key,
+      label: field.label,
+      gate: field.gate,
+      text: buildLocalFieldInsight(field, record),
+      status: "pending",
+    })),
   };
   saveAiCache(aiState);
   renderAiPanel(elements.aiPanel, aiState);
+  applyCoverageFieldAi(aiState, record.date);
 
   let errorCount = 0;
   const update = () => {
     saveAiCache(aiState);
     renderAiPanel(elements.aiPanel, aiState);
+    applyCoverageFieldAi(aiState, record.date);
   };
 
   const summaryPromise = fetch("/ai/summary", {
@@ -267,8 +530,10 @@ async function runAi(record) {
       update();
     })
     .catch(() => {
-      aiState.summary = "生成失败";
-      aiState.summaryStatus = "error";
+      aiState.summary = `本地离线解读：当前状态 ${record.output.state}，核心驱动 ${record.output.reasonsTop3
+        .map((item) => item.text)
+        .join(" / ") || "暂无"}。`;
+      aiState.summaryStatus = "done";
       errorCount += 1;
       update();
     });
@@ -288,8 +553,8 @@ async function runAi(record) {
       update();
     })
     .catch(() => {
-      aiState.overall = "生成失败";
-      aiState.overallStatus = "error";
+      aiState.overall = `本地离线总结：建议动作 ${record.output.state} / β ${record.output.beta} / β_cap ${record.output.betaCap}。`;
+      aiState.overallStatus = "done";
       errorCount += 1;
       update();
     });
@@ -320,8 +585,9 @@ async function runAi(record) {
           .catch(() => {
             const target = aiState.gates.find((item) => item.id === gate.id);
             if (target) {
-              target.text = "生成失败";
-              target.status = "error";
+              const fallbackGate = (record.output.gates || []).find((item) => item.id === gate.id);
+              target.text = `${fallbackGate?.note || "暂无"}；状态 ${String(fallbackGate?.status || "--").toUpperCase()}`;
+              target.status = "done";
             }
             errorCount += 1;
             update();
@@ -337,9 +603,51 @@ async function runAi(record) {
     await runGateBatch(batch, i === 0 ? 0 : 300);
   }
 
+  const runFieldBatch = async (batch, delayMs = 0) => {
+    if (delayMs) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    await Promise.all(
+      batch.map((field) =>
+        fetch("/ai/gate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: field.key, prompt: field.prompt }),
+        })
+          .then((resp) => {
+            if (!resp.ok) throw new Error("field failed");
+            return resp.json();
+          })
+          .then((data) => {
+            const target = aiState.fields.find((item) => item.key === data.id);
+            if (target) {
+              target.text = data.text || target.text;
+              target.status = "done";
+            }
+            update();
+          })
+          .catch(() => {
+            const target = aiState.fields.find((item) => item.key === field.key);
+            if (target) {
+              target.status = "error";
+            }
+            errorCount += 1;
+            update();
+          })
+      )
+    );
+  };
+
+  const fields = payload.fields || [];
+  const fieldBatchSize = 6;
+  for (let i = 0; i < fields.length; i += fieldBatchSize) {
+    const batch = fields.slice(i, i + fieldBatchSize);
+    await runFieldBatch(batch, i === 0 ? 0 : 120);
+  }
+
   await Promise.all([summaryPromise, overallPromise]);
-  setAiStatus(errorCount ? "AI 部分完成" : "AI 已生成");
-  setRunStage(elements.runStageAi, errorCount ? "部分完成" : "完成");
+  setAiStatus(errorCount ? "AI 已生成（部分离线）" : "AI 已生成");
+  setRunStage(elements.runStageAi, errorCount ? "完成(含离线)" : "完成");
 }
 
 function parseInputJson(text) {
@@ -404,6 +712,10 @@ function validateInput(input) {
     }
   });
   return errors;
+}
+
+function humanizeFieldName(key) {
+  return fieldMeta[key]?.label || key;
 }
 
 function listMissingFields(input) {
@@ -527,6 +839,7 @@ function renderSnapshot(history, date) {
   const record = pickRecordByDate(history, resolvedDate);
   if (record) {
     renderOutput(elements, record, history);
+    applyCoverageFieldAi(aiCacheForDate(record.date), record.date);
     updateRunMetaFromRecord(record);
     if (elements.inputJson) {
       elements.inputJson.value = JSON.stringify(record.input, null, 2);
@@ -538,6 +851,7 @@ function renderSnapshot(history, date) {
   } else if (history.length) {
     const fallback = history[history.length - 1];
     renderOutput(elements, fallback, history);
+    applyCoverageFieldAi(aiCacheForDate(fallback.date), fallback.date);
     syncHistorySelection(fallback.date);
   }
 }
@@ -588,7 +902,7 @@ function updateRunMetaFromRecord(record) {
   const errors = input.__errors || [];
   const softOnly =
     errors.length > 0 &&
-    errors.every((err) => /fallback|blocked|cloudflare|rate limit/i.test(err));
+    errors.every((err) => /fallback|blocked|cloudflare|rate limit|历史日期回抓|仅支持最新数据/i.test(err));
   let trust = "OK";
   let trustLevel = "ok";
   if (errors.length && !softOnly) {
@@ -624,42 +938,86 @@ async function runToday(options = {}) {
     setRunStage(elements.runStageReplay, "待运行");
     setRunStage(elements.runStageAi, "待运行");
     etaTimer.start("total", Date.now());
+    const schemaKeys = Object.keys(inputSchema);
     const { mode = "auto" } = options;
-    let customInput = loadCustomInput();
+    const history = loadHistory();
+
+    const baseRecord = history.find((item) => item.date === targetDate);
+    const baseInput = cloneJson(baseRecord?.input || loadCustomInput());
+    let customInput = baseInput ? { ...baseInput, date: targetDate } : null;
+
+    if (customInput) {
+      coerceInputTypes(customInput);
+      hydrateFieldFreshness(customInput, targetDate);
+      applyHalfLifeGate(customInput, schemaKeys, targetDate);
+    }
+
     if (mode === "auto") {
-      showRunStatus("启动自动抓取...");
-      setWorkflowStatus(elements.workflowFetch, "抓取中");
-      setRunStage(elements.runStageFetch, "抓取中");
+      showRunStatus("本地历史优先：检查快照与半衰期...");
+      setWorkflowStatus(elements.workflowFetch, "检查中");
+      setRunStage(elements.runStageFetch, "检查中");
       etaTimer.start("fetch", Date.now());
-      const fetched = await autoFetch();
+
+      // 1) 先尝试使用本地 auto.json（不触发外部抓取），再按需触发外部刷新补齐缺失。
+      if (needsAutoFetch(customInput, schemaKeys)) {
+        showRunStatus("读取本地快照（auto.json）...");
+        const localSnap = await autoFetch({ targetDate, force: false });
+        if (localSnap) {
+          customInput = mergeInputsPreferFresh(customInput, localSnap, schemaKeys, targetDate);
+          coerceInputTypes(customInput);
+          hydrateFieldFreshness(customInput, targetDate);
+          applyHalfLifeGate(customInput, schemaKeys, targetDate);
+        }
+      }
+
+      if (needsAutoFetch(customInput, schemaKeys)) {
+        showRunStatus("外部抓取补齐缺失字段...");
+        const refreshed = await autoFetch({ targetDate, force: true });
+        if (refreshed) {
+          customInput = mergeInputsPreferFresh(customInput, refreshed, schemaKeys, targetDate);
+          coerceInputTypes(customInput);
+          hydrateFieldFreshness(customInput, targetDate);
+          applyHalfLifeGate(customInput, schemaKeys, targetDate);
+        }
+      }
+
       etaTimer.end("fetch", Date.now());
       updateEtaDisplay();
-      if (!fetched) {
-        showError(["未提供输入数据，请先粘贴 JSON 或插入模板并填写。"]);
+
+      if (!customInput) {
+        showError(["未获取到可用数据：本地快照为空且外部抓取失败。"]);
         showRunStatus("运行失败：未获取到数据");
         setWorkflowStatus(elements.workflowFetch, "失败");
         setRunStage(elements.runStageFetch, "失败");
         return;
       }
-      customInput = fetched;
-      setWorkflowStatus(elements.workflowFetch, "完成");
-      setRunStage(elements.runStageFetch, "完成");
-    } else if (needsAutoFetch(customInput, Object.keys(inputSchema))) {
-      showRunStatus("输入不完整，请先补齐或使用自动抓取。");
+      setWorkflowStatus(elements.workflowFetch, needsAutoFetch(customInput, schemaKeys) ? "WARN" : "完成");
+      setRunStage(elements.runStageFetch, needsAutoFetch(customInput, schemaKeys) ? "WARN" : "完成");
+    } else if (needsAutoFetch(customInput, schemaKeys)) {
+      showRunStatus("输入不完整：请使用自动抓取补齐缺失字段。");
       setWorkflowStatus(elements.workflowFetch, "跳过");
       setRunStage(elements.runStageFetch, "跳过");
     } else {
-      showRunStatus("使用已填输入...");
+      showRunStatus("使用本地快照...");
       setWorkflowStatus(elements.workflowFetch, "跳过");
       setRunStage(elements.runStageFetch, "跳过");
     }
-    const history = loadHistory();
+
     const normalizedInput = normalizeInputForRun({ ...customInput, date: targetDate }, history);
+    coerceInputTypes(normalizedInput);
+    hydrateFieldFreshness(normalizedInput, targetDate);
+    applyHalfLifeGate(normalizedInput, schemaKeys, targetDate);
+    backfillMissingFromHistory(normalizedInput, history, targetDate);
     refreshMissingFields(normalizedInput, Object.keys(inputSchema));
     const errors = validateInput(normalizedInput);
     if (errors.length) {
       const missing = normalizedInput.__missing || [];
-      const errorText = missing.length ? [`缺失字段：${missing.join(", ")}`] : errors;
+      const staleHints = (normalizedInput.__errors || []).filter((item) =>
+        String(item).startsWith("半衰期拦截：")
+      );
+      const errorText = missing.length
+        ? [`缺失字段：${missing.map((item) => humanizeFieldName(item)).join("、")}`, ...staleHints]
+        : errors;
       showError(errorText);
       showRunStatus("运行失败：字段不完整");
       setWorkflowStatus(elements.workflowValidate, "失败");
@@ -741,18 +1099,40 @@ function resetCustomInput() {
   showError([]);
 }
 
-async function autoFetch() {
+async function autoFetch(options = {}) {
+  const { targetDate = null, force = false } = options;
   try {
     showSourceStatus("抓取中...");
     showError([]);
-    setWorkflowStatus(elements.workflowFetch, "抓取中");
-    const response = await fetch(`/data/auto.json?ts=${Date.now()}`, { cache: "no-store" });
+    setWorkflowStatus(elements.workflowFetch, force ? "抓取中" : "本地快照");
+
+    const today = dateKey();
+    const wantsHistory = Boolean(targetDate && targetDate !== today);
+    const readLocalAuto = !force && !wantsHistory;
+
+    let response;
+    if (readLocalAuto) {
+      response = await fetch(`/data/auto.json?ts=${Date.now()}`, { cache: "no-store" });
+    } else {
+      const payloadBody = {};
+      if (targetDate) payloadBody.date = targetDate;
+      if (force) payloadBody.force = true;
+      const endpoint = wantsHistory ? "/data/history" : "/data/refresh";
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payloadBody),
+        cache: "no-store",
+      });
+    }
     if (!response.ok) {
-      throw new Error("本地抓取数据不存在，请先运行 npm run fetch");
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || "实时抓取失败");
     }
     const payload = await response.json();
     const combined = buildCombinedInput(payload, templateInput);
     combined.__proxyTrace = payload.proxyTrace;
+    hydrateFieldFreshness(combined, targetDate || dateKey());
     elements.inputJson.value = JSON.stringify(combined, null, 2);
     saveCustomInput(combined);
     const missing = listMissingFields(combined).filter((key) => key !== "__sources");
@@ -773,8 +1153,10 @@ async function autoFetch() {
       })
       .join("<br/>");
     showSourceStatus(
-      `<strong>已抓取</strong>：本地爬虫数据（FRED/DefiLlama/Farside/CoinGecko/Binance/Coinglass）。更新时间：${
-        payload.generatedAt || "未知"
+      `${
+        readLocalAuto
+          ? `<strong>已读取</strong>：本地快照 auto.json（无需外部抓取）。更新时间：${payload.generatedAt || "未知"}`
+          : `<strong>已抓取</strong>：本地爬虫数据（FRED/DefiLlama/Farside/CoinGecko/Binance/Coinglass）。更新时间：${payload.generatedAt || "未知"}`
       }<br/>代理：${proxyTrace || "未检测"}<br/>缺失：${(payload.missing || []).join(", ") || "无"}<br/>错误：${
         (payload.errors || []).join(" | ") || "无"
       }`
@@ -818,54 +1200,66 @@ async function selectHistoryDate(date) {
     return;
   }
   etaTimer.start("total", Date.now());
-  etaTimer.start("fetch", Date.now());
-  setRunMeta({ id: `HIS-${date}`, time: formatRunTimestamp(Date.now()) });
-  setRunStage(elements.runStageFetch, "抓取中");
-  setRunStage(elements.runStageValidate, "待运行");
-  setRunStage(elements.runStageCompute, "待运行");
-  setRunStage(elements.runStageReplay, "待运行");
-  setRunStage(elements.runStageAi, "待运行");
-  setHistoryHint("抓取中...");
-  const payload = await fetchHistoryDate(date);
-  etaTimer.end("fetch", Date.now());
-  updateEtaDisplay();
-  if (!payload) {
+  try {
+    etaTimer.start("fetch", Date.now());
+    setRunMeta({ id: `HIS-${date}`, time: formatRunTimestamp(Date.now()) });
+    setRunStage(elements.runStageFetch, "抓取中");
+    setRunStage(elements.runStageValidate, "待运行");
+    setRunStage(elements.runStageCompute, "待运行");
+    setRunStage(elements.runStageReplay, "待运行");
+    setRunStage(elements.runStageAi, "待运行");
+    setHistoryHint("抓取中...");
+    const payload = await fetchHistoryDate(date);
+    etaTimer.end("fetch", Date.now());
+    updateEtaDisplay();
+    if (!payload) {
+      setRunStage(elements.runStageFetch, "失败");
+      setHistoryHint("抓取失败");
+      return;
+    }
+    setRunStage(elements.runStageFetch, "完成");
+    const combined = buildCombinedInput(payload, templateInput);
+    const normalized = normalizeInputForRun({ ...combined, date }, history);
+    const schemaKeys = Object.keys(inputSchema);
+    coerceInputTypes(normalized);
+    hydrateFieldFreshness(normalized, date);
+    applyHalfLifeGate(normalized, schemaKeys, date);
+    backfillMissingFromHistory(normalized, history, date);
+    refreshMissingFields(normalized, Object.keys(inputSchema));
+    const errors = validateInput(normalized);
+    if (errors.length) {
+      const staleHints = (normalized.__errors || []).filter((item) =>
+        String(item).startsWith("半衰期拦截：")
+      );
+      showError([...errors, ...staleHints]);
+      setHistoryHint("数据不完整，无法回放");
+      setRunStage(elements.runStageValidate, "失败");
+      setRunStage(elements.runStageCompute, "跳过");
+      setRunStage(elements.runStageReplay, "跳过");
+      return;
+    }
+    etaTimer.start("compute", Date.now());
+    setRunStage(elements.runStageValidate, "通过");
+    setRunStage(elements.runStageCompute, "计算中");
+    const output = runPipeline(normalized);
+    etaTimer.end("compute", Date.now());
+    updateEtaDisplay();
+    const record = { date, input: normalized, output };
+    const updated = history.filter((item) => item.date !== date);
+    updated.push(record);
+    saveHistory(updated);
+    renderSnapshot(updated, date);
+    updateRunMetaFromRecord(record);
+    etaTimer.start("ai", Date.now());
+    setRunStage(elements.runStageCompute, "完成");
+    setRunStage(elements.runStageReplay, "可回放");
+    await runAi(record);
+    etaTimer.end("ai", Date.now());
+    setHistoryHint("已抓取并写入历史");
+  } finally {
     etaTimer.end("total", Date.now());
     updateEtaDisplay();
-    setRunStage(elements.runStageFetch, "失败");
-    setHistoryHint("抓取失败");
-    return;
   }
-  const combined = buildCombinedInput(payload, templateInput);
-  const normalized = normalizeInputForRun({ ...combined, date }, history);
-  refreshMissingFields(normalized, Object.keys(inputSchema));
-  const errors = validateInput(normalized);
-  if (errors.length) {
-    showError(errors);
-    setHistoryHint("数据不完整，无法回放");
-    setRunStage(elements.runStageValidate, "失败");
-    return;
-  }
-  etaTimer.start("compute", Date.now());
-  setRunStage(elements.runStageValidate, "通过");
-  setRunStage(elements.runStageCompute, "计算中");
-  const output = runPipeline(normalized);
-  etaTimer.end("compute", Date.now());
-  updateEtaDisplay();
-  const record = { date, input: normalized, output };
-  const updated = history.filter((item) => item.date !== date);
-  updated.push(record);
-  saveHistory(updated);
-  renderSnapshot(updated, date);
-  updateRunMetaFromRecord(record);
-  etaTimer.start("ai", Date.now());
-  setRunStage(elements.runStageCompute, "完成");
-  setRunStage(elements.runStageReplay, "可回放");
-  await runAi(record);
-  etaTimer.end("ai", Date.now());
-  etaTimer.end("total", Date.now());
-  updateEtaDisplay();
-  setHistoryHint("已抓取并写入历史");
 }
 
 function exportJson(history) {
@@ -897,14 +1291,16 @@ function initWorkflow() {
 
 elements.runBtn.addEventListener("click", () => runToday({ mode: "auto" }));
 elements.clearBtn.addEventListener("click", clearHistory);
-elements.applyInputBtn.addEventListener("click", applyCustomInput);
-elements.resetInputBtn.addEventListener("click", resetCustomInput);
-elements.exportJsonBtn.addEventListener("click", () => exportJson(loadHistory()));
-elements.exportCsvBtn.addEventListener("click", () => exportCsv(loadHistory()));
-elements.templateBtn.addEventListener("click", () => {
+elements.viewPlainBtn?.addEventListener("click", () => setViewMode("plain", { rerender: true }));
+elements.viewExpertBtn?.addEventListener("click", () => setViewMode("expert", { rerender: true }));
+elements.applyInputBtn?.addEventListener("click", applyCustomInput);
+elements.resetInputBtn?.addEventListener("click", resetCustomInput);
+elements.exportJsonBtn?.addEventListener("click", () => exportJson(loadHistory()));
+elements.exportCsvBtn?.addEventListener("click", () => exportCsv(loadHistory()));
+elements.templateBtn?.addEventListener("click", () => {
   elements.inputJson.value = JSON.stringify(templateInput, null, 2);
 });
-elements.validateBtn.addEventListener("click", () => {
+elements.validateBtn?.addEventListener("click", () => {
   try {
     const parsed = parseInputJson(elements.inputJson.value);
     if (!parsed) {
@@ -917,7 +1313,12 @@ elements.validateBtn.addEventListener("click", () => {
     showError(["JSON 解析失败：请检查格式。"]);
   }
 });
-elements.fetchBtn.addEventListener("click", autoFetch);
+elements.fetchBtn?.addEventListener("click", () =>
+  autoFetch({ targetDate: elements.runDate.value || dateKey(), force: false })
+);
+elements.forceFetchBtn?.addEventListener("click", () =>
+  autoFetch({ targetDate: elements.runDate.value || dateKey(), force: true })
+);
 if (elements.timelineRange) {
   elements.timelineRange.addEventListener("input", () => {
     const history = loadHistory();
@@ -1028,6 +1429,12 @@ window.__autoFetch__ = autoFetch;
 
 syncHistoryWindow();
 
+try {
+  applyViewMode(localStorage.getItem(viewModeKey) || "plain");
+} catch {
+  applyViewMode("plain");
+}
+
 const history = loadHistory().length ? loadHistory() : (loadCachedHistory() || []);
 if (history.length) {
   renderSnapshot(history, null);
@@ -1038,7 +1445,8 @@ if (history.length) {
 syncControls();
 initWorkflow();
 renderAiPanel(elements.aiPanel, loadAiCache());
-renderAiStatus(elements.aiStatus, localStorage.getItem(aiStatusKey) || "AI 未连接");
+renderAiStatus(elements.aiStatus, localStorage.getItem(aiStatusKey) || "AI 离线解读待机");
+applyCoverageFieldAi(aiCacheForDate(selectedDate), selectedDate);
 
 if (shouldAutoRun(history, dateKey())) {
   setTimeout(() => {

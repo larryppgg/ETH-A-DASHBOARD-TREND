@@ -2,4 +2,5 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
-python3 -m http.server 5173 --directory src
+python3 scripts/collector.py
+python3 scripts/server.py

@@ -7,7 +7,7 @@ import subprocess
 import urllib.request
 from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import re
 
 FRED_KEY = "a2c8da09c18aaaa2e9f30289114b5573"
@@ -65,6 +65,50 @@ REQUIRED_FIELDS = [
     "srfChange",
     "ism",
 ]
+
+# Half-life governance (days). Stale threshold uses 2x half-life (aligns with frontend policy).
+HALF_LIFE_DAYS = {
+    "dxy5d": 3,
+    "dxy3dUp": 3,
+    "us2yWeekBp": 3,
+    "fciUpWeeks": 14,
+    "etf1d": 2,
+    "etf5d": 4,
+    "etf10d": 7,
+    "stablecoin30d": 10,
+    "exchStableDelta": 5,
+    "exchBalanceTrend": 7,
+    "liquidationUsd": 2,
+    "crowdingIndex": 4,
+    "longWicks": 4,
+    "reverseFishing": 4,
+    "shortFailure": 4,
+    "mcapGrowth": 4,
+    "mcapElasticity": 5,
+    "floatDensity": 30,
+    "rsdScore": 20,
+    "mappingRatioDown": 20,
+    "lstcScore": 14,
+    "netIssuanceHigh": 14,
+    "trendMomentum": 3,
+    "divergence": 3,
+    "topo": 5,
+    "spectral": 5,
+    "roughPath": 5,
+    "deltaES": 3,
+    "rrpChange": 5,
+    "tgaChange": 5,
+    "srfChange": 7,
+    "ism": 45,
+    "distributionGateCount": 30,
+    "ethSpotPrice": 2,
+    "cexTvl": 7,
+}
+
+AUTO_JSON_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "src", "data", "auto.json")
+)
+
 PROXY_CANDIDATES = ["direct"]
 
 
@@ -87,7 +131,18 @@ load_env(ENV_PATH)
 
 
 def load_proxy_candidates():
-    return ["direct"]
+    candidates = []
+    for key in ("PROXY_PRIMARY", "PROXY_FALLBACK"):
+        value = (os.environ.get(key) or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+        value = (os.environ.get(key) or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    if "direct" not in candidates:
+        candidates.append("direct")
+    return candidates
 
 
 PROXY_CANDIDATES = load_proxy_candidates()
@@ -205,8 +260,113 @@ def resolve_host(host):
     return None
 
 
+def parse_date_like(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        try:
+            return datetime.fromisoformat(value + "T23:59:59+00:00")
+        except Exception:
+            return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def resolve_half_life_days(key):
+    return HALF_LIFE_DAYS.get(key, 7)
+
+
+def is_stale(observed_at, as_of, key):
+    observed = parse_date_like(observed_at)
+    as_of_dt = parse_date_like(as_of) or datetime.now(timezone.utc)
+    if not observed:
+        return False
+    age_days = max(0.0, (as_of_dt - observed).total_seconds() / 86400.0)
+    return age_days > resolve_half_life_days(key) * 2
+
+
+def load_previous_snapshot(path=AUTO_JSON_PATH):
+    try:
+        if not path or not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as fp:
+            return json.load(fp)
+    except Exception:
+        return None
+
+
+def backfill_from_previous(payload, previous, as_of_date=None):
+    if not payload or not previous:
+        return []
+    data = payload.get("data") or {}
+    sources = payload.get("sources") or {}
+    field_obs = payload.get("fieldObservedAt") or {}
+    field_fetch = payload.get("fieldFetchedAt") or {}
+    field_upd = payload.get("fieldUpdatedAt") or {}
+    missing = list(payload.get("missing") or [])
+
+    prev_data = previous.get("data") or {}
+    prev_sources = previous.get("sources") or {}
+    prev_obs = previous.get("fieldObservedAt") or {}
+    prev_upd = previous.get("fieldUpdatedAt") or {}
+
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    as_of = as_of_date or payload.get("targetDate") or payload.get("generatedAt") or now_iso
+    keys = list(dict.fromkeys(REQUIRED_FIELDS + ["ethSpotPrice", "cexTvl"]))
+
+    filled = []
+    for key in keys:
+        if data.get(key) is not None:
+            continue
+        prev_val = prev_data.get(key)
+        if prev_val is None:
+            continue
+        observed_at = prev_obs.get(key) or prev_upd.get(key) or previous.get("generatedAt")
+        if is_stale(observed_at, as_of, key):
+            continue
+        data[key] = prev_val
+        sources[key] = prev_sources.get(key) or sources.get(key) or "Local cache"
+        field_obs[key] = observed_at
+        field_upd[key] = observed_at
+        field_fetch[key] = now_iso
+        if key in missing:
+            missing.remove(key)
+        filled.append(key)
+
+    if filled:
+        errors = payload.get("errors")
+        if not isinstance(errors, list):
+            errors = []
+        errors.append("Local cache fallback: " + ", ".join(filled))
+        payload["errors"] = errors
+
+    payload["data"] = data
+    payload["sources"] = sources
+    payload["fieldObservedAt"] = field_obs
+    payload["fieldFetchedAt"] = field_fetch
+    payload["fieldUpdatedAt"] = field_upd
+    payload["missing"] = missing
+    return filled
+
+
 def curl_probe(url, proxy=None, timeout=6):
     cmd = ["curl", "-sSL", "--connect-timeout", str(timeout), "--max-time", str(timeout)]
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if host:
+        ip = resolve_host(host)
+        if ip:
+            cmd += ["--resolve", f"{host}:{port}:{ip}"]
     if proxy and proxy.lower() != "direct":
         cmd += ["--proxy", proxy]
     cmd.append(url)
@@ -449,7 +609,28 @@ def fetch_macro(target_date=None):
         "srfChange": "FRED: SRFTRD",
         "ism": "FRED: NAPM",
     }
-    return data, sources, missing
+    def stamp(series, idx=0):
+        if not series or idx >= len(series):
+            return None
+        date_value = series[idx].get("date")
+        return f"{date_value}T00:00:00Z" if date_value else None
+
+    observed_at = {
+        "dxy5d": stamp(dxy, 0),
+        "dxy3dUp": stamp(dxy, 0),
+        "us2yWeekBp": stamp(dgs2, 0),
+        "fciUpWeeks": stamp(nfci, 0),
+        "policyWindow": stamp(dff, 0),
+        "preMeeting2y": stamp(dgs2, 2),
+        "current2y": stamp(dgs2, 0),
+        "preMeetingDxy": stamp(dxy, 2),
+        "currentDxy": stamp(dxy, 0),
+        "rrpChange": stamp(rrp, 0),
+        "tgaChange": stamp(tga, 0),
+        "srfChange": stamp(srf, 0),
+        "ism": stamp(ism, 0),
+    }
+    return data, sources, missing, {"observedAt": observed_at}
 
 
 def fetch_defillama(target_date=None):
@@ -473,10 +654,13 @@ def fetch_defillama(target_date=None):
     prior_idx = idx + 30 if idx + 30 < len(points) else min(len(points) - 1, idx)
     prior = points[prior_idx]["value"]
     stablecoin30d = percent_change(latest, prior)
+    observed_date = points[idx].get("date")
+    observed_stamp = f"{observed_date}T00:00:00Z" if observed_date else None
     return (
         {"stablecoin30d": stablecoin30d, "totalStableNow": latest, "totalStableAgo": prior},
         {"stablecoin30d": "DefiLlama: stablecoincharts/all"},
         [],
+        {"observedAt": {"stablecoin30d": observed_stamp}},
     )
 
 
@@ -500,6 +684,8 @@ def fetch_stablecoin_eth(target_date=None):
     latest = points[idx]["value"]
     prior_idx = idx + 30 if idx + 30 < len(points) else min(len(points) - 1, idx)
     prior = points[prior_idx]["value"]
+    observed_date = points[idx].get("date")
+    observed_stamp = f"{observed_date}T00:00:00Z" if observed_date else None
     return (
         {"ethStableNow": latest, "ethStableAgo": prior},
         {
@@ -507,6 +693,7 @@ def fetch_stablecoin_eth(target_date=None):
             "ethStableAgo": "DefiLlama: stablecoincharts/ethereum",
         },
         [],
+        {"observedAt": {"ethStableNow": observed_stamp, "ethStableAgo": observed_stamp}},
     )
 
 
@@ -641,11 +828,15 @@ def fetch_farside(target_date=None):
         etf10d = sum(item["total"] for item in window[:10])
         prev_val = series[idx + 1]["total"] if idx + 1 < len(series) else 0
         prev_extreme = prev_val <= -180
+        obs_date = series[idx]["date"] if idx < len(series) else None
     else:
         etf1d = parsed[0]["total"] if parsed else 0
         etf5d = sum(item["total"] for item in parsed[:5])
         etf10d = sum(item["total"] for item in parsed[:10])
         prev_extreme = False
+        obs_date = series[0]["date"] if series else None
+
+    obs_stamp = f"{obs_date}T00:00:00Z" if obs_date else None
     return (
         {
             "etf1d": etf1d,
@@ -660,7 +851,15 @@ def fetch_farside(target_date=None):
             "prevEtfExtremeOutflow": "Derived: prior day ETF extreme",
         },
         [] if parsed else ["etf1d", "etf5d", "etf10d"],
-        errors,
+        {
+            "errors": errors,
+            "observedAt": {
+                "etf1d": obs_stamp,
+                "etf5d": obs_stamp,
+                "etf10d": obs_stamp,
+                "prevEtfExtremeOutflow": obs_stamp,
+            },
+        },
     )
 
 
@@ -875,6 +1074,8 @@ def fetch_coingecko_ohlc(target_date=None):
     volume_confirm = volumes[idx] >= avg_volume * 1.2
     close_window = [item["close"] for item in ohlc_points[idx : idx + 30]]
     volume_window = volumes[idx : idx + 30]
+    obs_date = ohlc_points[idx].get("date") if idx < len(ohlc_points) else None
+    obs_stamp = f"{obs_date}T00:00:00Z" if obs_date else None
     return (
         {
             "trendMomentum": trend_momentum,
@@ -897,6 +1098,17 @@ def fetch_coingecko_ohlc(target_date=None):
             "volumeConfirm": "CoinGecko: market_chart total_volumes",
         },
         [],
+        {
+            "observedAt": {
+                "trendMomentum": obs_stamp,
+                "divergence": obs_stamp,
+                "crowdingIndex": obs_stamp,
+                "longWicks": obs_stamp,
+                "reverseFishing": obs_stamp,
+                "shortFailure": obs_stamp,
+                "volumeConfirm": obs_stamp,
+            }
+        },
     )
 
 
@@ -1062,29 +1274,113 @@ def today_key():
     return datetime.now(timezone.utc).date().isoformat()
 
 
+def shift_date_iso(date_value, days):
+    parsed = parse_iso_date(date_value)
+    if not parsed:
+        return None
+    return (parsed + timedelta(days=days)).isoformat()
+
+
+def build_field_timestamps(data, sources, target_date, generated_at, observed_overrides=None):
+    observed = {}
+    fetched = {}
+    field_updated = {}
+    fallback = generated_at
+    overrides = observed_overrides or {}
+    if target_date:
+        fallback = f"{target_date}T00:00:00Z"
+    for key in data.keys():
+        source = (sources or {}).get(key, "")
+        stamp = fallback
+        if source.startswith("FRED:") and target_date:
+            stamp = f"{target_date}T00:00:00Z"
+        if "(t-2)" in source and target_date:
+            shifted = shift_date_iso(target_date, -2)
+            stamp = f"{shifted}T00:00:00Z" if shifted else stamp
+        if "(latest)" in source:
+            stamp = generated_at
+        if "Derived:" in source and target_date:
+            stamp = f"{target_date}T00:00:00Z"
+        if overrides.get(key):
+            stamp = overrides[key]
+        observed[key] = stamp
+        fetched[key] = generated_at
+        field_updated[key] = stamp
+    return observed, fetched, field_updated
+
+
 def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", dest="target_date", default=None)
     parser.add_argument("--output", dest="output_path", default=os.path.join("src", "data", "auto.json"))
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv if argv is not None else [])
     target_date = args.target_date
     errors = []
+    observed_overrides = {}
+
+    def merge_observed(meta):
+        if not isinstance(meta, dict):
+            return
+        obs = meta.get("observedAt") or {}
+        if not isinstance(obs, dict):
+            return
+        for key, stamp in obs.items():
+            if key and stamp:
+                observed_overrides[key] = stamp
 
     def safe_call(name, func, missing_keys):
         try:
             result = func(target_date)
-            if isinstance(result, tuple) and len(result) == 4:
-                data, sources, missing, extra_errors = result
+            if not isinstance(result, tuple):
+                return result
+            if len(result) == 3:
+                return result
+            if len(result) == 4:
+                data, sources, missing, extra = result
+                extra_errors = []
+                if isinstance(extra, dict):
+                    merge_observed(extra)
+                    extra_errors = extra.get("errors") or []
+                else:
+                    extra_errors = extra or []
                 if extra_errors:
                     errors.extend([f"{name}: {err}" for err in extra_errors])
                 return data, sources, missing
-            return result
+            if len(result) == 5:
+                data, sources, missing, meta, extra_errors = result
+                if isinstance(meta, dict):
+                    merge_observed(meta)
+                    meta_errors = meta.get("errors") or []
+                    if meta_errors:
+                        errors.extend([f"{name}: {err}" for err in meta_errors])
+                if extra_errors:
+                    errors.extend([f"{name}: {err}" for err in extra_errors])
+                return data, sources, missing
+            return result[:3]
         except Exception as exc:
             errors.append(f"{name}: {exc}")
             return {}, {}, missing_keys
 
-    macro = fetch_macro(target_date)
+    macro = safe_call(
+        "FRED(macro)",
+        fetch_macro,
+        [
+            "dxy5d",
+            "dxy3dUp",
+            "us2yWeekBp",
+            "fciUpWeeks",
+            "policyWindow",
+            "preMeeting2y",
+            "current2y",
+            "preMeetingDxy",
+            "currentDxy",
+            "rrpChange",
+            "tgaChange",
+            "srfChange",
+            "ism",
+        ],
+    )
     stable = safe_call("DefiLlama(stablecoin)", fetch_defillama, ["stablecoin30d"])
     stable_eth = safe_call("DefiLlama(stablecoin_eth)", fetch_stablecoin_eth, ["mappingRatioDown"])
     etf = safe_call("Farside(ETF)", fetch_farside, ["etf1d", "etf5d", "etf10d"])
@@ -1166,6 +1462,10 @@ def main(argv=None):
                 "mappingRatioDown": "Derived: ETH stablecoin share 30d",
             }
         )
+        stable_stamp = observed_overrides.get("ethStableNow") or observed_overrides.get("stablecoin30d")
+        if stable_stamp:
+            observed_overrides["mappingRatioDown"] = stable_stamp
+            observed_overrides["rsdScore"] = stable_stamp
 
     if "fee7d" in data and "fee30d" in data:
         fee7d = data["fee7d"] or 0
@@ -1184,10 +1484,6 @@ def main(argv=None):
     if target_date and target_date != today_key():
         errors.append("历史日期回抓：部分来源仅支持最新数据，已使用最新值补齐。")
 
-    for key in REQUIRED_FIELDS:
-        if key not in data or data[key] is None:
-            missing.append(key)
-
     data.pop("_closeSeries", None)
     data.pop("_volumeSeries", None)
     data.pop("totalStableNow", None)
@@ -1198,12 +1494,48 @@ def main(argv=None):
     data.pop("fee7d", None)
     data.pop("fee30d", None)
     data.pop("fearGreed", None)
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     data = strip_none(data)
+
+    for key in REQUIRED_FIELDS:
+        if key not in data or data.get(key) is None:
+            missing.append(key)
+
+    previous = load_previous_snapshot()
+    if previous:
+        skeleton = {
+            "generatedAt": generated_at,
+            "targetDate": target_date,
+            "data": data,
+            "sources": sources,
+            "fieldObservedAt": {},
+            "fieldFetchedAt": {},
+            "fieldUpdatedAt": {},
+            "missing": missing,
+            "errors": errors,
+        }
+        filled = backfill_from_previous(skeleton, previous, as_of_date=target_date or generated_at)
+        if filled:
+            for key in filled:
+                stamp = (skeleton.get("fieldObservedAt") or {}).get(key)
+                if stamp:
+                    observed_overrides[key] = stamp
+        data = skeleton.get("data") or data
+        sources = skeleton.get("sources") or sources
+        missing = skeleton.get("missing") or missing
+        errors = skeleton.get("errors") or errors
+
+    field_observed_at, field_fetched_at, field_updated_at = build_field_timestamps(
+        data, sources, target_date, generated_at, observed_overrides
+    )
     payload = {
-        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generatedAt": generated_at,
         "targetDate": target_date,
         "data": data,
         "sources": sources,
+        "fieldObservedAt": field_observed_at,
+        "fieldFetchedAt": field_fetched_at,
+        "fieldUpdatedAt": field_updated_at,
         "missing": sorted(set(missing)),
         "proxyTrace": probe_proxy(),
         "errors": errors,
@@ -1213,4 +1545,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    main(sys.argv[1:])

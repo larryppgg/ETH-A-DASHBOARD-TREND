@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ETH-A Dashboard Trend</title>
-    <link rel="stylesheet" href="styles.css?v=20260202-5" />
+    <link rel="stylesheet" href="styles.css?v=20260210-2" />
   </head>
   <body>
     <div class="grid-sheen"></div>
@@ -20,7 +20,11 @@
         <p>战情级策略看板 · 全链路可审计 · 日度快照与历史趋势</p>
       </div>
       <div class="masthead-actions">
-        <button id="runBtn" class="cta" onclick="window.__runToday__ && window.__runToday__()">今日运行</button>
+        <div class="view-toggle" aria-label="视图切换">
+          <button id="viewPlainBtn" class="ghost view active" type="button">通俗</button>
+          <button id="viewExpertBtn" class="ghost view" type="button">专家</button>
+        </div>
+        <button id="runBtn" class="cta">今日运行</button>
         <div class="last-run">Last Run: <span id="lastRun">--</span></div>
         <div class="run-status" id="runStatus">待运行</div>
       </div>
@@ -49,6 +53,14 @@
             <div class="run-meta">
               <span>AI 状态</span>
               <strong id="healthAi">--</strong>
+            </div>
+            <div class="run-meta">
+              <span>数据时效（观测）</span>
+              <strong id="healthTimeliness">--</strong>
+            </div>
+            <div class="run-meta">
+              <span>发布门禁</span>
+              <strong id="healthQuality">--</strong>
             </div>
             <div class="run-meta">
               <span>ETA</span>
@@ -227,7 +239,7 @@
 
       <section class="panel ai-panel">
         <div class="panel-title">AI 解读</div>
-        <div class="ai-status" id="aiStatus">AI 未连接</div>
+        <div class="ai-status" id="aiStatus">AI 离线解读待机</div>
         <div id="aiPanel" class="ai-body"></div>
       </section>
 
@@ -237,16 +249,24 @@
           <div class="trend-card">
             <div class="trend-label">β 趋势</div>
             <div class="trend-chart" id="betaChart"></div>
+            <div class="trend-meta" id="betaTrendMeta">反映仓位进攻/防守倾向，数值越高越进攻。</div>
           </div>
           <div class="trend-card">
             <div class="trend-label">置信度趋势</div>
             <div class="trend-chart" id="confidenceChart"></div>
+            <div class="trend-meta" id="confidenceTrendMeta">反映当前判断稳定性，越高说明信号一致性越强。</div>
           </div>
           <div class="trend-card">
             <div class="trend-label">FoF 趋势</div>
             <div class="trend-chart" id="fofChart"></div>
+            <div class="trend-meta" id="fofTrendMeta">反映流动性环境，偏低通常意味着资金面偏紧。</div>
           </div>
         </div>
+      </section>
+
+      <section class="panel eval-panel">
+        <div class="panel-title">预测评估 · 发布门禁</div>
+        <div id="evalPanel" class="eval-body"></div>
       </section>
 
       <section class="panel data-panel">
@@ -270,24 +290,25 @@
           </div>
         </div>
         <div class="data-actions">
+          <span class="mode-pill">自动模式（本地历史优先 + 半衰期治理）</span>
           <label class="toggle">
             <span>运行日期</span>
             <input type="date" id="runDate" />
           </label>
           <button id="fetchBtn" class="ghost">自动抓取</button>
-          <button class="ghost" onclick="window.__autoFetch__ && window.__autoFetch__()">强制抓取</button>
-          <button id="templateBtn" class="ghost">插入模板</button>
-          <button id="validateBtn" class="ghost">验证输入</button>
+          <button id="forceFetchBtn" class="ghost">强制抓取</button>
         </div>
         <div id="sourceStatus" class="source-status"></div>
         <div id="inputError" class="input-error"></div>
         <div class="data-hint">
           规则：数据不完整将严格阻止运行。请先自动抓取，再补齐缺失项。
         </div>
-        <textarea id="inputJson" class="data-textarea" rows="12" spellcheck="false"></textarea>
+        <div class="data-purpose">
+          本区用于“抓取 + 校验 + 回填 + 导出”。系统默认自动抓取并优先使用本地历史补齐，
+          同时对超半衰期字段执行拦截，避免过期数据污染判断。手动输入路径已默认关闭。
+        </div>
+        <textarea id="inputJson" class="data-textarea" rows="12" spellcheck="false" readonly></textarea>
         <div class="data-buttons">
-          <button id="applyInputBtn" class="ghost">应用并运行</button>
-          <button id="resetInputBtn" class="ghost">清空输入</button>
           <button id="exportJsonBtn" class="ghost">导出 JSON</button>
           <button id="exportCsvBtn" class="ghost">导出 CSV</button>
         </div>
@@ -310,6 +331,6 @@
         }
       })();
     </script>
-    <script type="module" src="app.js?v=20260202-5"></script>
+    <script type="module" src="app.js?v=20260210-2"></script>
   </body>
 </html>

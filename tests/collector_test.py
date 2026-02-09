@@ -179,5 +179,188 @@ class TestCollectorFetchJson(unittest.TestCase):
         self.assertTrue(server.should_disable_cache("/ui/render.js?v=1"), "带参数的 js 也应禁止缓存")
         self.assertFalse(server.should_disable_cache("/image.png"), "非文本资源可缓存")
 
+    def test_payload_contains_field_updated_at(self):
+        captured = {}
+
+        def fake_dump(payload, _fp, ensure_ascii=False, indent=2):
+            captured.update(payload)
+
+        with patch("scripts.collector.fetch_macro", return_value=({"dxy5d": 1.2}, {"dxy5d": "FRED: DTWEXBGS"}, [])), \
+            patch("scripts.collector.fetch_defillama", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_stablecoin_eth", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_farside", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coingecko_market", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coinglass_liquidations", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_defillama_cex", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coingecko_ohlc", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_rwa_protocols", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_eth_fees", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_fear_greed", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_distribution_gate", return_value=({}, {}, [])), \
+            patch("scripts.collector.probe_proxy", return_value=[]), \
+            patch("builtins.open", mock_open()), \
+            patch("json.dump", fake_dump):
+            collector.main(["--date", "2026-02-01"])
+
+        self.assertIn("fieldUpdatedAt", captured, "payload 应包含字段级更新时间")
+        self.assertIn("dxy5d", captured.get("fieldUpdatedAt", {}), "字段级更新时间应覆盖已有字段")
+
+    def test_payload_contains_observed_and_fetched_at(self):
+        captured = {}
+
+        def fake_dump(payload, _fp, ensure_ascii=False, indent=2):
+            captured.update(payload)
+
+        with patch("scripts.collector.fetch_macro", return_value=({"dxy5d": 1.0}, {"dxy5d": "FRED: DTWEXBGS"}, [])), \
+            patch("scripts.collector.fetch_defillama", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_stablecoin_eth", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_farside", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coingecko_market", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coinglass_liquidations", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_defillama_cex", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_coingecko_ohlc", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_rwa_protocols", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_eth_fees", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_fear_greed", return_value=({}, {}, [])), \
+            patch("scripts.collector.fetch_distribution_gate", return_value=({}, {}, [])), \
+            patch("scripts.collector.probe_proxy", return_value=[]), \
+            patch("builtins.open", mock_open()), \
+            patch("json.dump", fake_dump):
+            collector.main(["--date", "2026-02-01"])
+
+        self.assertIn("fieldObservedAt", captured, "payload 应包含字段观测时间")
+        self.assertIn("fieldFetchedAt", captured, "payload 应包含字段抓取时间")
+        self.assertIn("dxy5d", captured.get("fieldObservedAt", {}), "字段观测时间应覆盖已有字段")
+        self.assertIn("dxy5d", captured.get("fieldFetchedAt", {}), "字段抓取时间应覆盖已有字段")
+
+    def test_field_observed_at_prefers_overrides(self):
+        captured = {}
+
+        def fake_dump(payload, _fp, ensure_ascii=False, indent=2):
+            captured.update(payload)
+
+        override_stamp = "2026-01-30T00:00:00Z"
+        with patch(
+            "scripts.collector.fetch_macro",
+            return_value=(
+                {"dxy5d": 1.0},
+                {"dxy5d": "FRED: DTWEXBGS"},
+                [],
+                {"observedAt": {"dxy5d": override_stamp}},
+            ),
+        ), patch("scripts.collector.fetch_defillama", return_value=({}, {}, [])), patch(
+            "scripts.collector.fetch_stablecoin_eth", return_value=({}, {}, [])
+        ), patch("scripts.collector.fetch_farside", return_value=({}, {}, [], [])), patch(
+            "scripts.collector.fetch_coingecko_market", return_value=({}, {}, [])
+        ), patch("scripts.collector.fetch_coinglass_liquidations", return_value=({}, {}, [])), patch(
+            "scripts.collector.fetch_defillama_cex", return_value=({}, {}, [])
+        ), patch("scripts.collector.fetch_coingecko_ohlc", return_value=({}, {}, [])), patch(
+            "scripts.collector.fetch_rwa_protocols", return_value=({}, {}, [])
+        ), patch("scripts.collector.fetch_eth_fees", return_value=({}, {}, [])), patch(
+            "scripts.collector.fetch_fear_greed", return_value=({}, {}, [])
+        ), patch("scripts.collector.fetch_distribution_gate", return_value=({}, {}, [])), patch(
+            "scripts.collector.probe_proxy", return_value=[]
+        ), patch("builtins.open", mock_open()), patch("json.dump", fake_dump):
+            collector.main(["--date", "2026-02-01"])
+
+        self.assertEqual(
+            captured.get("fieldObservedAt", {}).get("dxy5d"),
+            override_stamp,
+            "fieldObservedAt 应优先使用观测时间 override",
+        )
+
+    def test_load_proxy_candidates_includes_direct_and_env(self):
+        with patch.dict(os.environ, {"PROXY_PRIMARY": "http://127.0.0.1:7890"}, clear=True):
+            candidates = collector.load_proxy_candidates()
+        self.assertIn("direct", candidates, "代理候选必须包含 direct")
+        self.assertIn("http://127.0.0.1:7890", candidates, "代理候选应读取 PROXY_PRIMARY")
+
+    def test_fetch_macro_emits_observed_at(self):
+        base_dates = [
+            "2026-02-01",
+            "2026-01-31",
+            "2026-01-30",
+            "2026-01-29",
+            "2026-01-28",
+            "2026-01-27",
+            "2026-01-26",
+        ]
+
+        def series_for(series_id):
+            if series_id in ("DTWEXBGS", "DGS2", "RRPONTSYD", "WTREGEN", "SRFTRD"):
+                return [{"date": d, "value": float(i + 1)} for i, d in enumerate(base_dates)]
+            if series_id == "NFCI":
+                return [{"date": d, "value": float(i)} for i, d in enumerate(base_dates[:3])]
+            if series_id in ("NAPM", "DFF"):
+                return [{"date": d, "value": float(i)} for i, d in enumerate(base_dates[:3])]
+            return []
+
+        with patch("scripts.collector.fred_series", side_effect=lambda sid, *_args, **_kwargs: series_for(sid)):
+            data, sources, missing, meta = collector.fetch_macro("2026-02-01")
+
+        self.assertIn("observedAt", meta, "fetch_macro 应返回 observedAt 元信息")
+        self.assertEqual(
+            meta.get("observedAt", {}).get("dxy5d"),
+            "2026-02-01T00:00:00Z",
+            "宏观字段观测时间应来自真实观测日期",
+        )
+
+    def test_backfill_from_previous_fills_missing_when_not_stale(self):
+        payload = {
+            "generatedAt": "2026-02-08T12:00:00Z",
+            "targetDate": None,
+            "data": {"stablecoin30d": None},
+            "sources": {},
+            "fieldObservedAt": {},
+            "fieldFetchedAt": {},
+            "fieldUpdatedAt": {},
+            "missing": ["stablecoin30d"],
+            "errors": [],
+        }
+        previous = {
+            "generatedAt": "2026-02-07T12:00:00Z",
+            "targetDate": None,
+            "data": {"stablecoin30d": 1.23},
+            "sources": {"stablecoin30d": "DefiLlama"},
+            "fieldObservedAt": {"stablecoin30d": "2026-02-07T00:00:00Z"},
+            "fieldFetchedAt": {"stablecoin30d": "2026-02-07T12:00:00Z"},
+            "fieldUpdatedAt": {"stablecoin30d": "2026-02-07T00:00:00Z"},
+            "missing": [],
+            "errors": [],
+        }
+        filled = collector.backfill_from_previous(payload, previous, as_of_date="2026-02-08")
+        self.assertIn("stablecoin30d", filled, "应回填缺失字段")
+        self.assertEqual(payload.get("data", {}).get("stablecoin30d"), 1.23, "应写入缺失字段值")
+        self.assertNotIn("stablecoin30d", payload.get("missing", []), "回填后不应仍缺")
+        self.assertTrue(payload.get("errors"), "回填应记录 errors 提示")
+
+    def test_backfill_from_previous_skips_stale(self):
+        payload = {
+            "generatedAt": "2026-02-08T12:00:00Z",
+            "targetDate": None,
+            "data": {"stablecoin30d": None},
+            "sources": {},
+            "fieldObservedAt": {},
+            "fieldFetchedAt": {},
+            "fieldUpdatedAt": {},
+            "missing": ["stablecoin30d"],
+            "errors": [],
+        }
+        previous = {
+            "generatedAt": "2025-12-01T12:00:00Z",
+            "targetDate": None,
+            "data": {"stablecoin30d": 9.99},
+            "sources": {"stablecoin30d": "DefiLlama"},
+            "fieldObservedAt": {"stablecoin30d": "2025-12-01T00:00:00Z"},
+            "fieldFetchedAt": {"stablecoin30d": "2025-12-01T12:00:00Z"},
+            "fieldUpdatedAt": {"stablecoin30d": "2025-12-01T00:00:00Z"},
+            "missing": [],
+            "errors": [],
+        }
+        filled = collector.backfill_from_previous(payload, previous, as_of_date="2026-02-08")
+        self.assertEqual(filled, [], "过期字段不应回填")
+        self.assertIsNone(payload.get("data", {}).get("stablecoin30d"), "过期字段不应写入")
+        self.assertIn("stablecoin30d", payload.get("missing", []), "过期字段仍应标记缺失")
+
 if __name__ == "__main__":
     unittest.main()

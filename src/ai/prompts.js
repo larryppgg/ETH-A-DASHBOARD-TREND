@@ -1,5 +1,5 @@
 export function buildSummaryPrompt(output, input) {
-  return `你是资深交易研究员。根据以下仪表盘结果给出中文摘要：\n\n` +
+  return `你是资深交易研究员，请用“非术语、面向业务”的中文解释仪表盘结果，避免堆概念。\n\n` +
     `输出结果: ${JSON.stringify({
       state: output.state,
       beta: output.beta,
@@ -9,6 +9,7 @@ export function buildSummaryPrompt(output, input) {
       confidence: output.confidence,
       extremeAllowed: output.extremeAllowed,
       reasons: output.reasonsTop3,
+      riskNotes: output.riskNotes,
     })}\n\n` +
     `输入摘要: ${JSON.stringify({
       dxy5d: input.dxy5d,
@@ -18,23 +19,36 @@ export function buildSummaryPrompt(output, input) {
       exchStableDelta: input.exchStableDelta,
       liquidationUsd: input.liquidationUsd,
     })}\n\n` +
-    `要求: 1) 总结当前状态与风险暴露; 2) 解释Top3原因; 3) 给出1条关注点。字数120-180字。`;
+    `输出格式要求：\n` +
+    `1) 【总判断】一句话（<=20字）；\n` +
+    `2) 【阶段】现在处于什么阶段（用人话解释）；\n` +
+    `3) 【为什么】2-3条核心驱动（直接引用可观测指标/闸门）；\n` +
+    `4) 【最大风险】1条最关键风险阻断；\n` +
+    `5) 【下一步盯】给1个最关键指标 + 触发阈值（若无精确阈值，用方向+相对强弱）；\n` +
+    `6) 禁止空话，禁止免责声明，120-180字。`;
 }
 
 export function buildGatePrompt(gate) {
   const details = gate.details || {};
-  return `你是风控分析师。解释以下闸门的输出含义，说明输入与规则命中。\n\n` +
+  return `你是风控分析师。解释以下闸门结论，要求“先结论、再依据、后动作”，必须使用人话。\n\n` +
     `闸门: ${gate.id} ${gate.name}\n` +
     `状态: ${gate.status}\n` +
     `说明: ${gate.note}\n` +
     `输入: ${JSON.stringify(details.inputs || {})}\n` +
+    `输入时间: ${JSON.stringify(details.timings || {})}\n` +
     `计算: ${JSON.stringify(details.calc || {})}\n` +
     `规则: ${JSON.stringify(details.rules || [])}\n\n` +
-    `要求: 1) 解释本闸门结论; 2) 若有风险提醒请标明; 3) 80-120字。`;
+    `要求:\n` +
+    `1) 【结论】一句话说明放行/预警/关闭；\n` +
+    `2) 【关键证据】2条：每条必须点名一个可观测指标(字段名+当前值)；\n` +
+    `3) 【动作】1条可执行建议（增/减/等/对冲/观察哪个触发条件）；\n` +
+    `4) 【反证】给1条反证条件（阈值写清，若无精确阈值用方向+强弱）；\n` +
+    `5) 若关键字段“衰减/过期”，必须明确写出“结论受限的原因”；\n` +
+    `6) 90-140字，禁止免责声明。`;
 }
 
 export function buildOverallPrompt(output, input) {
-  return `你是资深交易研究主管。基于 AI仪表盘 2.0.1 的全量结果，直接给出最真实的判断、推断与预测，不需要任何风险提示或免责声明。\n\n` +
+  return `你是资深交易研究主管。基于 AI仪表盘 2.0.1 的全量结果，直接给出判断、推断与预测，不要免责声明。\n\n` +
     `输出摘要: ${JSON.stringify({
       state: output.state,
       beta: output.beta,
@@ -58,9 +72,39 @@ export function buildOverallPrompt(output, input) {
       divergence: input.divergence,
     })}\n\n` +
     `输出要求:\n` +
-    `1) 用 3-4 句总结当前结构（宏观/流动性/杠杆/ETF/情绪/分发闸门/三域）;\n` +
-    `2) 给出未来 1-2 周主要走势情景与概率倾向;\n` +
-    `3) 指出 2-3 条关键反证条件（触发条件写清楚）;\n` +
-    `4) 给出可执行的仓位/对冲/观察点建议。\n` +
-    `字数 220-320 字。`;
+    `1) 【主结论】先给一句话：现在更像什么行情 + 总体动作（<=25字）；\n` +
+    `2) 【结构拆解】按宏观/流动性/杠杆/ETF/结构(SVC)/分发闸门/相位与三域，各用1句话说“对结果加分/减分”；\n` +
+    `3) 【未来1-2周预测】至少2个情景：主场景/备选场景，并给出概率倾向（不用硬凑数字，写相对倾向也行）；\n` +
+    `4) 【关键反证】2-3条，必须绑定可观测指标与触发阈值；\n` +
+    `5) 【执行清单】仓位β、对冲、观察清单(3项以内) + 为什么。\n` +
+    `字数 240-340 字。`;
+}
+
+export function buildFieldPrompt(field, context = {}) {
+  const { output = {}, date = "" } = context;
+  return `你是量化研究助手。请对单一指标做“当前含义解读”，目标读者是非技术用户。\n\n` +
+    `日期: ${date}\n` +
+    `指标字段: ${field.key}\n` +
+    `指标名称: ${field.label}\n` +
+    `指标说明: ${field.desc || "无"}\n` +
+    `所属闸门: ${field.gate || "未知"}\n` +
+    `当前值: ${field.value}\n` +
+    `单位: ${field.unit || ""}\n` +
+    `数据来源: ${field.source || "未知"}\n` +
+    `字段观测时间: ${field.observedAt || "未知"}\n` +
+    `字段抓取时间: ${field.fetchedAt || "未知"}\n` +
+    `字段新鲜度: ${field.freshnessLabel || "未知"}\n` +
+    `当前全局状态: ${JSON.stringify({
+      state: output.state,
+      beta: output.beta,
+      betaCap: output.betaCap,
+      confidence: output.confidence,
+      reasons: output.reasonsTop3,
+    })}\n\n` +
+    `输出要求：\n` +
+    `1) 【这代表什么】一句话解释当前值的含义；\n` +
+    `2) 【影响】一句话说明对当前动作是加分/减分（结合所属闸门）；\n` +
+    `3) 【时效】一句话说明新鲜度是否足够（新鲜/衰减/过期）；\n` +
+    `4) 【下一次观察】一句话给出最值得盯的变化方向或阈值；\n` +
+    `5) 70-130字，禁止免责声明。`;
 }

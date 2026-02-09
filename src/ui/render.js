@@ -7,7 +7,10 @@ import {
   buildEvidenceHints,
   buildHealthSummary,
   buildMissingImpact,
+  toPlainText,
 } from "./summary.js";
+import { classifyFieldFreshness } from "../inputPolicy.js";
+import { renderPredictionEvaluation } from "./eval.js";
 
 const stateLabels = {
   A: "A / 进攻档",
@@ -26,7 +29,7 @@ export function renderKanban(elements, state, output) {
   card.innerHTML = `
     <div>${output.phaseLabel} · β ${formatNumber(output.beta)}</div>
     <div>置信度 ${formatNumber(output.confidence)}</div>
-    <div>${output.reasonsTop3[0]?.text || "—"}</div>
+    <div>${toPlainText(output.reasonsTop3[0]?.text || "—")}</div>
   `;
   if (state === "A") {
     kanbanA.appendChild(card);
@@ -38,13 +41,24 @@ export function renderKanban(elements, state, output) {
   document.querySelector(`.kanban-col[data-state="${state}"]`).classList.add("active");
 }
 
+function fieldLabel(key) {
+  return fieldMeta[key]?.label || key;
+}
+
+function formatAuditValue(value) {
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "number") return formatNumber(value, 3);
+  if (value === null || value === undefined || value === "") return "--";
+  return String(value);
+}
+
 function renderKeyValueBlock(title, data = {}) {
   const rows = Object.entries(data)
     .map(([key, value]) => {
-      const text = typeof value === "object" ? JSON.stringify(value) : value;
+      const text = typeof value === "object" ? JSON.stringify(value) : formatAuditValue(value);
       return `
         <div class="detail-row">
-          <span>${key}</span>
+          <span>${fieldLabel(key)}</span>
           <strong>${text}</strong>
         </div>
       `;
@@ -65,7 +79,10 @@ function renderInspector(container, gate) {
   }
   const details = gate.details || {};
   const steps = details.steps && details.steps.length ? details.steps : ["读取输入", "计算阈值/得分", "应用规则"];
-  const rules = details.rules && details.rules.length ? details.rules.join(" / ") : "无";
+  const rules =
+    details.rules && details.rules.length
+      ? details.rules.map((rule) => toPlainText(rule)).join(" / ")
+      : "无";
   container.innerHTML = `
     <div class="inspector-title">${gate.id} · ${gate.name}</div>
     <div class="inspector-grid">
@@ -124,47 +141,29 @@ export function renderGateChain(container, gates, selectedId, onSelect) {
     container.innerHTML = '<div class="inspector-empty">暂无闸门链路</div>';
     return;
   }
-  const width = 520;
-  const height = 200;
-  const padding = 24;
-  const gap = (width - padding * 2) / Math.max(gates.length - 1, 1);
-  const nodeY = height / 2;
-  const colors = {
-    open: "#59d48f",
-    warn: "#f3a545",
-    closed: "#e35654",
-  };
-  const nodes = gates
-    .map((gate, idx) => {
-      const x = padding + idx * gap;
-      const color = colors[gate.status] || "#9aa4b2";
-      const active = gate.id === selectedId;
-      return `
-        <g data-gate="${gate.id}">
-          <circle cx="${x}" cy="${nodeY}" r="${active ? 12 : 10}" fill="${color}" />
-          <text x="${x}" y="${nodeY - 18}" text-anchor="middle" fill="#cfd6e4" font-size="10">${gate.id}</text>
-          <text x="${x}" y="${nodeY + 26}" text-anchor="middle" fill="#8892a6" font-size="9">${gate.name}</text>
-        </g>
-      `;
-    })
-    .join("");
-  const links = gates
-    .map((_gate, idx) => {
-      if (idx === 0) return "";
-      const x1 = padding + (idx - 1) * gap;
-      const x2 = padding + idx * gap;
-      return `<line x1="${x1}" y1="${nodeY}" x2="${x2}" y2="${nodeY}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="4 6" />`;
-    })
-    .join("");
   container.innerHTML = `
-    <svg width="100%" height="100%" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
-      ${links}
-      ${nodes}
-    </svg>
+    <div class="gate-chain-scroll">
+      ${gates
+        .map((gate, index) => {
+          const active = gate.id === selectedId ? "active" : "";
+          const lead = index > 0 ? '<span class="gate-chain-link" aria-hidden="true"></span>' : "";
+          return `
+            <div class="gate-chain-item ${active}" data-gate="${gate.id}">
+              ${lead}
+              <button type="button" class="gate-chain-node ${gate.status}">
+                <span class="gate-chain-dot"></span>
+                <span class="gate-chain-id">${gate.id}</span>
+                <span class="gate-chain-name">${gate.name}</span>
+                <span class="gate-chain-note">${toPlainText(gate.note || "")}</span>
+              </button>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
   `;
   if (typeof onSelect === "function") {
-    const svg = container.querySelector("svg");
-    svg?.querySelectorAll("g[data-gate]").forEach((node) => {
+    container.querySelectorAll("[data-gate]").forEach((node) => {
       node.addEventListener("click", () => {
         const gateId = node.getAttribute("data-gate");
         const gate = gates.find((item) => item.id === gateId);
@@ -190,31 +189,49 @@ export function renderAuditVisual(container, gate) {
   const inputRows = Object.entries(inputs)
     .map(([key, value]) => {
       const source = sources[key] || "来源缺失";
-      const label = key;
-      const display = typeof value === "number" ? value.toFixed(3) : String(value);
+      const timing = details.timings?.[key] || {};
+      const observedAt = formatDataTime(timing.observedAt);
+      const fetchedAt = formatDataTime(timing.fetchedAt);
+      const freshness = timing.freshness?.label || "未知";
+      const label = fieldLabel(key);
+      const display = formatAuditValue(value);
+      const barWidth =
+        typeof value === "boolean"
+          ? value
+            ? 92
+            : 28
+          : typeof value === "number"
+          ? Math.max(8, Math.min(96, Math.log10(Math.abs(value) + 1) * 24))
+          : 40;
       return `
         <div class="audit-row">
           <div class="audit-key">${label}</div>
           <div class="audit-bar">
-            <span style="width:${Math.min(100, Math.abs(Number(value) || 0) * 10)}%"></span>
+            <span style="width:${barWidth}%"></span>
           </div>
           <div class="audit-value">${display}</div>
-          <div class="audit-source">${source}</div>
+          <div class="audit-source">${source}<div class="audit-time">${freshness} · 观测 ${observedAt} · 抓取 ${fetchedAt}</div></div>
         </div>
       `;
     })
     .join("");
   const ruleChips = rules.length
-    ? rules.map((rule) => `<span class="audit-chip hit">${rule}</span>`).join("")
+    ? rules
+        .map((rule) => `<span class="audit-chip hit">${toPlainText(rule)}</span>`)
+        .join("")
     : '<span class="audit-chip">无命中规则</span>';
   const calcRows = Object.entries(calc)
     .map(([key, value]) => {
-      const display = typeof value === "number" ? value.toFixed(3) : String(value);
-      return `<div class="audit-kv"><span>${key}</span><strong>${display}</strong></div>`;
+      const display = formatAuditValue(value);
+      return `<div class="audit-kv"><span>${fieldLabel(key)}</span><strong>${display}</strong></div>`;
     })
     .join("");
   container.innerHTML = `
     <div class="audit-head">${gate.id} · ${gate.name}</div>
+    <div class="audit-verdict">
+      <span>当前结论</span>
+      <strong>${toPlainText(gate.note || "暂无结论")}</strong>
+    </div>
     <div class="audit-section">
       <div class="audit-title">输入与来源</div>
       <div class="audit-list">${inputRows || '<div class="inspector-empty">无输入</div>'}</div>
@@ -234,14 +251,14 @@ export function renderReasons(listContainer, notesContainer, reasons, notes, gat
   listContainer.innerHTML = "";
   reasons.forEach((item) => {
     const li = document.createElement("li");
-    li.textContent = item.text;
+    li.textContent = toPlainText(item.text);
     if (item.gateId) {
       li.dataset.gateId = item.gateId;
       li.classList.add("reason-link");
     }
     listContainer.appendChild(li);
   });
-  notesContainer.innerHTML = notes.length ? notes.map((note) => `<div>${note}</div>`).join("") : "无";
+  notesContainer.innerHTML = notes.length ? notes.map((note) => `<div>${toPlainText(note)}</div>`).join("") : "无";
 
   listContainer.querySelectorAll(".reason-link").forEach((item) => {
     item.addEventListener("click", () => {
@@ -445,17 +462,80 @@ function formatCoverageValue(value) {
   return value ?? "—";
 }
 
-export function renderCoverage(container, input) {
+function formatDataTime(value) {
+  if (!value) return "--";
+  if (typeof value === "string") {
+    const m = value.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2})/);
+    if (m) return `${m[1]} ${m[2]}`;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mi = String(date.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+}
+
+function findGateForCoverage(output, groupId) {
+  const idMap = {
+    Tri: "3域",
+  };
+  const gateId = idMap[groupId] || groupId;
+  return (output?.gates || []).find((gate) => gate.id === gateId);
+}
+
+export function renderCoverage(container, input, output = null) {
   if (!container) return;
   const sources = input.__sources || {};
+  const fieldObservedAt = input.__fieldObservedAt || {};
+  const fieldFetchedAt = input.__fieldFetchedAt || {};
+  const fieldUpdatedAt = input.__fieldUpdatedAt || {};
+  const fieldFreshness = input.__fieldFreshness || {};
   const missing = new Set(input.__missing || []);
+  const fallbackUpdatedAt = formatDataTime(input.__generatedAt || input.generatedAt);
   container.innerHTML = coverageGroups
     .map((group) => {
       if (!group.keys.length) {
+        const gate = findGateForCoverage(output, group.id);
+        const gateId = gate?.id || group.id;
+        const gateStatus = gate?.status ? gate.status.toUpperCase() : "--";
+        const rawNote = gate?.note || "暂无输出";
+        const plainNote = toPlainText(rawNote);
+        const gateNote = plainNote !== rawNote ? `${rawNote}（解读：${plainNote}）` : rawNote;
+        const rules = (gate?.details?.rules || []).map((item) => toPlainText(item)).join(" / ") || "暂无";
+        const calc = gate?.details?.calc || {};
+        const calcHint = Object.keys(calc).length
+          ? Object.entries(calc)
+              .map(([k, v]) => `${fieldLabel(k)}=${formatAuditValue(v)}`)
+              .join(" / ")
+          : "暂无";
         return `
           <div class="coverage-section">
             <div class="coverage-title">${group.label}</div>
-            <div class="coverage-empty">此分区无原始输入字段，仅输出结果。</div>
+            <div class="coverage-derived">
+              <div class="coverage-derived-row">
+                <span>阶段结论</span>
+                <strong>${gateNote}</strong>
+              </div>
+              <div class="coverage-derived-row">
+                <span>状态</span>
+                <strong>${gateStatus}</strong>
+              </div>
+              <div class="coverage-derived-row">
+                <span>规则依据</span>
+                <strong>${rules}</strong>
+              </div>
+              <div class="coverage-derived-row">
+                <span>计算摘要</span>
+                <strong>${calcHint}</strong>
+              </div>
+            </div>
+            <div class="coverage-ai coverage-ai-gate" data-gate-ai="${gateId}" data-state="pending">
+              <span class="coverage-ai-tag">AI 解读</span>
+              <span class="coverage-ai-text">等待生成...</span>
+            </div>
           </div>
         `;
       }
@@ -465,18 +545,37 @@ export function renderCoverage(container, input) {
           const value = input[key];
           const isMissing = missing.has(key) || value === null || value === undefined;
           const source = sources[key] || "来源缺失";
+          const observedAt = formatDataTime(
+            fieldObservedAt[key] || fieldUpdatedAt[key] || fallbackUpdatedAt
+          );
+          const fetchedAt = formatDataTime(fieldFetchedAt[key] || fallbackUpdatedAt);
+          const freshness =
+            fieldFreshness[key] ||
+            classifyFieldFreshness(
+              fieldObservedAt[key] || fieldUpdatedAt[key] || input.__generatedAt,
+              input.date || input.__targetDate || new Date(),
+              key
+            );
+          const freshnessLabel = freshness?.label || "未知";
+          const freshnessClass = freshness?.level || "unknown";
           return `
-            <div class="coverage-row ${isMissing ? "missing" : "ok"}">
-              <div class="coverage-cell key">
-                <div class="coverage-label">${meta.label}</div>
-                <div class="coverage-desc">${meta.desc || ""}</div>
+            <div class="coverage-row ${isMissing ? "missing" : "ok"} ${freshnessClass}" data-field-key="${key}">
+              <div class="coverage-main">
+                <div class="coverage-cell key">
+                  <div class="coverage-label">${meta.label}</div>
+                  <div class="coverage-desc">${meta.desc || ""}</div>
+                </div>
+                <div class="coverage-cell value">
+                  ${isMissing ? "缺失" : formatCoverageValue(value)}
+                  <span class="coverage-unit">${meta.unit || ""}</span>
+                </div>
+                <div class="coverage-cell source">${source}</div>
+                <div class="coverage-cell status">${isMissing ? "缺失" : "可用"} · ${freshnessLabel} · 观测 ${observedAt} · 抓取 ${fetchedAt}</div>
               </div>
-              <div class="coverage-cell value">
-                ${isMissing ? "缺失" : formatCoverageValue(value)}
-                <span class="coverage-unit">${meta.unit || ""}</span>
+              <div class="coverage-ai" data-field-ai="${key}" data-state="pending">
+                <span class="coverage-ai-tag">AI 解读</span>
+                <span class="coverage-ai-text">${isMissing ? "字段缺失，等待补齐后解读" : "等待生成..."}</span>
               </div>
-              <div class="coverage-cell source">${source}</div>
-              <div class="coverage-cell status">${isMissing ? "缺失" : "可用"}</div>
             </div>
           `;
         })
@@ -499,7 +598,8 @@ export function renderOutput(elements, record, history) {
 
   elements.statusBadge.textContent = state;
   elements.statusTitle.textContent = stateLabels[state];
-  elements.statusSub.textContent = output.reasonsTop3.map((item) => item.text).join(" · ") || "—";
+  elements.statusSub.textContent =
+    output.reasonsTop3.map((item) => toPlainText(item.text)).join(" · ") || "—";
   elements.betaValue.textContent = `${formatNumber(output.beta)} / ${formatNumber(output.betaCap)}`;
   elements.hedgeValue.textContent = output.hedge ? "ON" : "OFF";
   elements.phaseValue.textContent = output.phaseLabel;
@@ -537,20 +637,24 @@ export function renderOutput(elements, record, history) {
 
   const aiStatus =
     typeof localStorage !== "undefined" && typeof localStorage.getItem === "function"
-      ? localStorage.getItem("eth_a_dashboard_ai_status_v1") || "AI 未连接"
-      : "AI 未连接";
+      ? localStorage.getItem("eth_a_dashboard_ai_status_v1") || "AI 离线解读待机"
+      : "AI 离线解读待机";
   const health = buildHealthSummary(record.input, { aiStatus });
   if (elements.healthFreshness) elements.healthFreshness.textContent = health.freshnessText;
   if (elements.healthMissing) elements.healthMissing.textContent = health.missingText;
   if (elements.healthProxy) elements.healthProxy.textContent = health.proxyText;
   if (elements.healthAi) elements.healthAi.textContent = health.aiText;
+  if (elements.healthTimeliness) elements.healthTimeliness.textContent = health.timelinessText;
+  if (elements.healthQuality) elements.healthQuality.textContent = health.qualityText;
   if (elements.runMetaTrust) {
     elements.runMetaTrust.textContent = health.level === "danger" ? "FAIL" : health.level === "warn" ? "WARN" : "OK";
     elements.runMetaTrust.className = health.level === "danger" ? "danger" : health.level === "warn" ? "warn" : "ok";
   }
 
-  if (elements.actionSummary) elements.actionSummary.textContent = actionSummary.action;
-  if (elements.actionDetail) elements.actionDetail.textContent = actionSummary.detail;
+  if (elements.actionSummary) elements.actionSummary.textContent = actionSummary.humanAdvice;
+  if (elements.actionDetail) {
+    elements.actionDetail.textContent = `量化建议：${actionSummary.action} · ${actionSummary.detail}`;
+  }
   if (elements.counterfactuals)
     elements.counterfactuals.innerHTML = buildCounterfactuals(output).map((item) => `<div>${item}</div>`).join("");
   if (elements.missingImpact)
@@ -583,33 +687,13 @@ export function renderOutput(elements, record, history) {
       gateNode.classList.add("active");
     }
     renderAuditVisual(elements.auditVisual, gate);
-    if (elements.gateInspector) {
-      const details = gate.details || {};
-      const steps = details.steps && details.steps.length ? details.steps : ["读取输入", "计算阈值/得分", "应用规则"];
-      const rules = details.rules && details.rules.length ? details.rules.join(" / ") : "无";
-      elements.gateInspector.innerHTML = `
-        <div class="inspector-title">${gate.id} · ${gate.name}</div>
-        <div class="inspector-grid">
-          ${renderKeyValueBlock("输入", details.inputs)}
-          ${renderKeyValueBlock("来源", details.sources)}
-          ${renderKeyValueBlock("计算", details.calc)}
-          <div class="inspector-block">
-            <h4>步骤</h4>
-            ${steps.map((step) => `<div>${step}</div>`).join("")}
-          </div>
-          <div class="inspector-block">
-            <h4>规则命中</h4>
-            <div>${rules}</div>
-          </div>
-        </div>
-      `;
-    }
+    renderInspector(elements.gateInspector, gate);
   });
   if (elements.evidenceHints) {
     const hints = buildEvidenceHints(output);
     elements.evidenceHints.innerHTML = hints.map((item) => `<div>${item}</div>`).join("");
   }
-  renderCoverage(elements.coverageList, record.input);
+  renderCoverage(elements.coverageList, record.input, output);
 
   const historySorted = [...history].sort((a, b) => a.date.localeCompare(b.date));
   const betaSeries = historySorted.map((item) => item.output.beta);
@@ -619,6 +703,28 @@ export function renderOutput(elements, record, history) {
   renderChart(elements.betaChart, betaSeries, "#e0b65b");
   renderChart(elements.confidenceChart, confidenceSeries, "#60d6c2");
   renderChart(elements.fofChart, fofSeries, "#59d48f");
+
+  if (elements.betaTrendMeta) {
+    const delta = betaSeries.length > 1 ? betaSeries[betaSeries.length - 1] - betaSeries[0] : 0;
+    elements.betaTrendMeta.textContent = `近 ${historySorted.length} 期 ${delta >= 0 ? "上行" : "下行"} ${formatNumber(Math.abs(delta))}`;
+  }
+  if (elements.confidenceTrendMeta) {
+    const delta =
+      confidenceSeries.length > 1
+        ? confidenceSeries[confidenceSeries.length - 1] - confidenceSeries[0]
+        : 0;
+    elements.confidenceTrendMeta.textContent = `近 ${historySorted.length} 期 ${delta >= 0 ? "增强" : "走弱"} ${formatNumber(
+      Math.abs(delta)
+    )}`;
+  }
+  if (elements.fofTrendMeta) {
+    const latest = historySorted[historySorted.length - 1]?.output?.fofScore ?? 0;
+    elements.fofTrendMeta.textContent = `当前 FoF ${formatNumber(latest)}（>60 偏宽松，<40 偏紧）`;
+  }
+
+  if (elements.evalPanel) {
+    renderPredictionEvaluation(elements.evalPanel, historySorted, record, { aiStatus });
+  }
 
   if (elements.workflowReplay) elements.workflowReplay.textContent = "可回放";
   if (elements.workflowRun) elements.workflowRun.textContent = "完成";

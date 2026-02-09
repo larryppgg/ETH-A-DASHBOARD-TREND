@@ -12,6 +12,7 @@ import {
   buildHealthSummary,
   buildMissingImpact,
   deriveTrustLevel,
+  toPlainText,
 } from "../src/ui/summary.js";
 import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline.js";
 import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/cache.js";
@@ -21,8 +22,16 @@ import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder
 import { createEtaTimer } from "../src/ui/etaTimer.js";
 import { buildOverallPrompt } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
+import { computePredictionEvaluation } from "../src/ui/eval.js";
 import { shouldAutoRun } from "../src/autoRun.js";
-import { needsAutoFetch } from "../src/inputPolicy.js";
+import {
+  needsAutoFetch,
+  resolveHalfLifeDays,
+  classifyFieldFreshness,
+  pickHistoryBackfillCandidate,
+  applyHalfLifeGate,
+  mergeInputsPreferFresh,
+} from "../src/inputPolicy.js";
 
 function assert(condition, message) {
   if (!condition) {
@@ -284,17 +293,52 @@ function testRenderCoverageMissing() {
     dxy3dUp: false,
     __missing: ["dxy5d"],
     __sources: { dxy3dUp: "FRED" },
+    __generatedAt: "2026-02-08T06:00:00Z",
+    __fieldObservedAt: { dxy3dUp: "2026-02-07T00:00:00Z" },
+    __fieldFetchedAt: { dxy3dUp: "2026-02-08T06:00:00Z" },
   };
   renderCoverage(container, input);
   assert(container.innerHTML.includes("缺失"), "覆盖矩阵应标记缺失字段");
+  assert(container.innerHTML.includes("观测 2026-02-07 00:00"), "覆盖矩阵应展示字段级观测时间");
+  assert(container.innerHTML.includes("抓取 2026-02-08 06:00"), "覆盖矩阵应展示字段级抓取时间");
+  assert(container.innerHTML.includes('data-field-ai="dxy3dUp"'), "覆盖矩阵应提供字段级 AI 解读槽位");
+}
+
+function testRenderCoverageDerivedGroups() {
+  const container = createNode();
+  const input = { __missing: [], __sources: {} };
+  const output = {
+    gates: [
+      { id: "V7", note: "买家试探 / 强度 0.52", status: "warn" },
+      { id: "V8", note: "牛 0.25 / 熊 0.25", status: "warn" },
+      { id: "HPM", note: "历史反转孕育区", status: "open" },
+    ],
+  };
+  renderCoverage(container, input, output);
+  assert(container.innerHTML.includes("买家试探"), "V7 分区应展示输出解释");
+  assert(container.innerHTML.includes("牛 0.25 / 熊 0.25"), "V8 分区应展示矩阵解释");
+  assert(container.innerHTML.includes("历史反转孕育区"), "HPM 分区应展示相位映射解释");
+  assert(container.innerHTML.includes('data-gate-ai="V7"'), "衍生分区应提供闸门级 AI 解读槽位");
 }
 
 function testBuildAiPayload() {
   const output = runPipeline(baseInput());
-  const record = { date: "2025-01-01", input: baseInput(), output };
+  const record = {
+    date: "2025-01-01",
+    input: {
+      ...baseInput(),
+      __sources: { dxy5d: "FRED: DTWEXBGS" },
+      __fieldObservedAt: { dxy5d: "2025-01-01T00:00:00Z" },
+      __fieldFetchedAt: { dxy5d: "2025-01-01T03:00:00Z" },
+    },
+    output,
+  };
   const payload = buildAiPayload(record);
   assert(payload.summary.prompt.includes("仪表盘"), "AI 总结应生成提示词");
   assert(payload.gates.length === output.gates.length, "AI 闸门提示应与闸门数量一致");
+  assert(Array.isArray(payload.fields) && payload.fields.length > 20, "AI payload 应包含逐指标字段解读任务");
+  assert(payload.fields.some((item) => item.key === "dxy5d"), "字段任务应包含 dxy5d");
+  assert(payload.fields[0].prompt.includes("单一指标"), "字段提示词应是逐指标解释");
 }
 
 function testShouldAutoRun() {
@@ -319,6 +363,94 @@ function testNeedsAutoFetch() {
   assert(needsAutoFetch({ a: 1, b: 2 }, keys) === true, "缺来源应抓取");
 }
 
+function testHalfLifePolicyAndBackfillCandidate() {
+  const recentHistory = [
+    {
+      date: "2026-02-07",
+      input: {
+        etf1d: -20,
+        __fieldObservedAt: { etf1d: "2026-02-07T00:00:00Z" },
+        __fieldFetchedAt: { etf1d: "2026-02-08T01:00:00Z" },
+        __generatedAt: "2026-02-08T01:00:00Z",
+      },
+    },
+    {
+      date: "2026-01-20",
+      input: {
+        etf1d: -10,
+        __fieldObservedAt: { etf1d: "2026-01-20T00:00:00Z" },
+        __generatedAt: "2026-01-21T00:00:00Z",
+      },
+    },
+  ];
+  const staleHistory = [
+    {
+      date: "2025-12-01",
+      input: {
+        etf1d: -5,
+        __fieldObservedAt: { etf1d: "2025-12-01T00:00:00Z" },
+        __generatedAt: "2025-12-01T12:00:00Z",
+      },
+    },
+  ];
+  assert(resolveHalfLifeDays("etf1d") <= 7, "ETF 短周期字段半衰期应较短");
+  const fresh = classifyFieldFreshness("2026-02-07T00:00:00Z", "2026-02-08", "etf1d");
+  assert(fresh.level === "fresh", "近一天数据应判定为新鲜");
+  const stale = classifyFieldFreshness("2025-12-01T00:00:00Z", "2026-02-08", "etf1d");
+  assert(stale.level === "stale", "超半衰期应判定为过期");
+  const candidate = pickHistoryBackfillCandidate(recentHistory, "etf1d", "2026-02-08");
+  assert(candidate && candidate.value === -20, "应优先回填最近且未过期的本地历史值");
+  const expired = pickHistoryBackfillCandidate(staleHistory, "etf1d", "2026-02-08");
+  assert(expired === null, "超半衰期历史值不应参与回填");
+}
+
+function testHalfLifeGateClearsStale() {
+  const input = {
+    etf1d: 12,
+    __fieldObservedAt: { etf1d: "2025-12-01T00:00:00Z" },
+    __fieldFetchedAt: { etf1d: "2025-12-01T01:00:00Z" },
+    __fieldFreshness: {},
+    __errors: [],
+  };
+  const staleKeys = applyHalfLifeGate(input, ["etf1d"], "2026-02-08");
+  assert(staleKeys.includes("etf1d"), "半衰期门控应识别过期字段");
+  assert(input.etf1d === null, "过期字段应被置空以阻止继续运行");
+  assert(
+    (input.__errors || []).some((item) => String(item).includes("半衰期拦截")),
+    "半衰期拦截应写入 __errors"
+  );
+}
+
+function testMergeInputsPreferFresh() {
+  const base = {
+    etf1d: 10,
+    __sources: { etf1d: "History" },
+    __fieldObservedAt: { etf1d: "2026-02-07T00:00:00Z" },
+    __fieldFetchedAt: { etf1d: "2026-02-07T12:00:00Z" },
+  };
+  const incomingNull = {
+    etf1d: null,
+    __sources: { etf1d: "Remote" },
+    __fieldObservedAt: { etf1d: "2026-02-08T00:00:00Z" },
+    __fieldFetchedAt: { etf1d: "2026-02-08T00:00:00Z" },
+  };
+  const merged1 = mergeInputsPreferFresh(base, incomingNull, ["etf1d"], "2026-02-08");
+  assert(merged1.etf1d === 10, "远端缺失时应保留本地可用值");
+  assert(
+    merged1.__sources?.etf1d === "History",
+    "合并后来源应保留被采用的那条记录"
+  );
+
+  const incomingStale = {
+    etf1d: 99,
+    __sources: { etf1d: "Remote" },
+    __fieldObservedAt: { etf1d: "2025-12-01T00:00:00Z" },
+    __fieldFetchedAt: { etf1d: "2026-02-08T00:00:00Z" },
+  };
+  const merged2 = mergeInputsPreferFresh(base, incomingStale, ["etf1d"], "2026-02-08");
+  assert(merged2.etf1d === 10, "远端过期值不应覆盖本地新鲜值");
+}
+
 function testLayoutSkeleton() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
   const ids = [
@@ -336,6 +468,8 @@ function testLayoutSkeleton() {
     "runMetaLeft",
     "runMetaRight",
     "healthFreshness",
+    "healthTimeliness",
+    "healthQuality",
     "timelineOverview",
     "timelineRange",
     "timelineLabel",
@@ -354,16 +488,44 @@ function testLayoutSkeleton() {
     "gateChain",
     "auditVisual",
     "statusOverview",
+    "viewPlainBtn",
+    "viewExpertBtn",
+    "evalPanel",
   ];
   ids.forEach((id) => {
     assert(html.includes(`id=\"${id}\"`), `布局应包含 ${id}`);
   });
+  assert(html.includes("自动模式"), "数据台应明确自动模式优先");
 }
 
 function testCacheBustingAssets() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
-  assert(html.includes("styles.css?v=20260202-5"), "样式应带最新 cache bust 参数");
-  assert(html.includes("app.js?v=20260202-5"), "脚本应带最新 cache bust 参数");
+  assert(html.includes("styles.css?v=20260210-2"), "样式应带最新 cache bust 参数");
+  assert(html.includes("app.js?v=20260210-2"), "脚本应带最新 cache bust 参数");
+}
+
+function testNoInlineRunOnclick() {
+  const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
+  assert(
+    !html.includes('id="runBtn" class="cta" onclick='),
+    "runBtn 不应使用内联 onclick，避免双重触发"
+  );
+}
+
+function testAppAutoFetchEndpoint() {
+  const source = readFileSync(new URL("../src/app.js", import.meta.url), "utf-8");
+  assert(
+    source.includes("\"/data/refresh\""),
+    "autoFetch 应支持 /data/refresh 实时重抓"
+  );
+  assert(
+    source.includes("/data/auto.json?ts="),
+    "autoFetch 应支持读取本地 auto.json（本地历史优先）"
+  );
+  assert(
+    source.includes('"/data/history"'),
+    "autoFetch 选择历史日期时应调用 /data/history"
+  );
 }
 
 function testStyleTokens() {
@@ -411,6 +573,11 @@ function testSummaryBuilders() {
   assert(health.level === "warn", "健康摘要应识别缺失字段");
   const softTrust = deriveTrustLevel({ __missing: [], __errors: ["fallback to jina"] });
   assert(softTrust.level === "warn", "仅软错误时可信度应为 WARN");
+  const historicalSoftTrust = deriveTrustLevel({
+    __missing: [],
+    __errors: ["历史日期回抓：部分来源仅支持最新数据，已使用最新值补齐。"],
+  });
+  assert(historicalSoftTrust.level === "warn", "历史回抓提示应归类为软错误");
   const fresh = buildHealthSummary({
     __missing: [],
     __errors: [],
@@ -420,8 +587,82 @@ function testSummaryBuilders() {
   const output = runPipeline(baseInput());
   const action = buildActionSummary(output);
   assert(action.action.includes("β"), "行动摘要应包含 beta 信息");
+  assert(action.humanAdvice && action.humanAdvice.length > 4, "行动摘要应包含人话建议");
   const impact = buildMissingImpact({ __missing: ["dxy5d", "etf1d"] });
   assert(impact.length >= 1, "缺失影响应返回列表");
+}
+
+function testPlainTextRespectsViewModeDataset() {
+  const previousDocument = global.document;
+  global.document = { body: { dataset: { viewMode: "expert" } } };
+  const raw = "SVC 结构强势加成";
+  const expert = toPlainText(raw);
+  global.document.body.dataset.viewMode = "plain";
+  const plain = toPlainText(raw);
+  global.document = previousDocument;
+
+  assert(expert === raw, "专家视图应输出原始术语，不应插入括号解释");
+  assert(plain.includes("（"), "通俗视图应包含括号解释");
+}
+
+function testEvalPanelRenders() {
+  const kanbanCol = createNode("div");
+  global.document = {
+    body: { classList: { add() {}, remove() {} } },
+    querySelectorAll() {
+      return [kanbanCol, kanbanCol, kanbanCol];
+    },
+    querySelector() {
+      return kanbanCol;
+    },
+    createElement(tag) {
+      return createNode(tag);
+    },
+  };
+  const elements = {
+    statusBadge: createNode(),
+    statusTitle: createNode(),
+    statusSub: createNode(),
+    betaValue: createNode(),
+    hedgeValue: createNode(),
+    phaseValue: createNode(),
+    confidenceValue: createNode(),
+    extremeValue: createNode(),
+    distributionValue: createNode(),
+    lastRun: createNode(),
+    gateList: createNode(),
+    gateInspector: createNode(),
+    gateChain: createNode(),
+    auditVisual: createNode(),
+    topReasons: createNode(),
+    riskNotes: createNode(),
+    evidenceHints: createNode(),
+    betaChart: createNode(),
+    confidenceChart: createNode(),
+    fofChart: createNode(),
+    kanbanA: createNode(),
+    kanbanB: createNode(),
+    kanbanC: createNode(),
+    coverageList: createNode(),
+    statusOverview: createNode(),
+    timelineLabel: createNode(),
+    timelineRange: createNode("input"),
+    timelineOverview: null,
+    timelineLegend: null,
+    evalPanel: createNode(),
+  };
+  const recordA = {
+    date: "2026-02-01",
+    input: { ...baseInput(), ethSpotPrice: 1000 },
+    output: runPipeline(baseInput()),
+  };
+  const recordB = {
+    date: "2026-02-08",
+    input: { ...baseInput(), ethSpotPrice: 1100 },
+    output: runPipeline(baseInput()),
+  };
+  renderOutput(elements, recordB, [recordA, recordB]);
+  assert(elements.evalPanel.innerHTML && elements.evalPanel.innerHTML.length > 10, "预测评估面板应渲染内容");
 }
 
 function testOverallPrompt() {
@@ -484,6 +725,11 @@ function testGateChainHasNodes() {
   assert(container.innerHTML.includes("G0"), "闸门链路应渲染节点");
 }
 
+function testDevScriptUsesServer() {
+  const dev = readFileSync(new URL("../scripts/dev.sh", import.meta.url), "utf-8");
+  assert(dev.includes("scripts/server.py"), "备用启动脚本应使用 server.py，保证 API 可用");
+}
+
 function testEtaTimerTotals() {
   const timer = createEtaTimer();
   timer.start("fetch", 0);
@@ -492,6 +738,18 @@ function testEtaTimerTotals() {
   timer.end("compute", 2500);
   const total = timer.totalMs();
   assert(total === 2500, "总耗时应为各阶段累加");
+}
+
+function testPredictionEvaluationBasic() {
+  const history = [
+    { date: "2026-02-01", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } },
+    { date: "2026-02-08", input: { ethSpotPrice: 1100 }, output: { state: "B", confidence: 0.5 } },
+    { date: "2026-02-15", input: { ethSpotPrice: 990 }, output: { state: "C", confidence: 0.6 } },
+  ];
+  const evaluation = computePredictionEvaluation(history, { horizons: [7, 14] });
+  assert(Array.isArray(evaluation.rows) && evaluation.rows.length === 3, "评估应生成逐日行");
+  assert(evaluation.summary.byHorizon["7"], "评估应包含 7D 汇总");
+  assert(evaluation.summary.byHorizon["14"], "评估应包含 14D 汇总");
 }
 
 function testBuildCombinedInputPrefersPayloadMissing() {
@@ -667,12 +925,25 @@ async function testRunTodayCompletesBeforeAi() {
 
   const payload = {
     generatedAt: "2026-02-01T00:00:00Z",
-    data: { ...baseInput(), prevEtfExtremeOutflow: false },
+    data: {
+      ...baseInput(),
+      prevEtfExtremeOutflow: false,
+      stablecoin30d: null,
+      mappingRatioDown: null,
+      rsdScore: null,
+    },
     sources: {},
-    missing: [],
+    missing: ["stablecoin30d", "mappingRatioDown", "rsdScore"],
     errors: [],
     proxyTrace: [],
   };
+
+  const prevDateRecord = {
+    date: "2026-01-31",
+    input: { ...baseInput(), prevEtfExtremeOutflow: false },
+    output: runPipeline(baseInput()),
+  };
+  store["eth_a_dashboard_history_v201"] = JSON.stringify([prevDateRecord]);
 
   let resolveAiStatus;
   const aiStatusPromise = new Promise((resolve) => {
@@ -680,7 +951,7 @@ async function testRunTodayCompletesBeforeAi() {
   });
 
   global.fetch = (url) => {
-    if (typeof url === "string" && url.startsWith("/data/auto.json")) {
+    if (url === "/data/refresh") {
       return Promise.resolve({
         ok: true,
         json: async () => payload,
@@ -704,6 +975,22 @@ async function testRunTodayCompletesBeforeAi() {
 
   try {
     assert(nodes.runStatus.textContent === "完成", "今日运行不应阻塞于 AI 请求");
+    assert(
+      !(nodes.inputError.textContent || "").includes("缺失字段"),
+      "历史补齐后不应再提示字段缺失"
+    );
+    assert(
+      (nodes.aiStatus.textContent || "").includes("离线解读"),
+      "AI 不可用时状态应明确为离线解读"
+    );
+    assert(
+      !(nodes.aiStatus.textContent || "").includes("未启用"),
+      "AI 状态文案不应停留在未启用"
+    );
+    assert(
+      (nodes.aiPanel.innerHTML || "").includes("本地离线解读"),
+      "AI 未启用时应回退本地离线解读"
+    );
   } finally {
     resolveAiStatus({
       ok: true,
@@ -723,16 +1010,23 @@ async function run() {
   testRenderOutputInspector();
   testStatusOverviewRenders();
   testRenderCoverageMissing();
+  testRenderCoverageDerivedGroups();
   testBuildAiPayload();
   testShouldAutoRun();
   testNeedsAutoFetch();
+  testHalfLifePolicyAndBackfillCandidate();
+  testHalfLifeGateClearsStale();
+  testMergeInputsPreferFresh();
   testLayoutSkeleton();
   testCacheBustingAssets();
+  testNoInlineRunOnclick();
+  testAppAutoFetchEndpoint();
   testStyleTokens();
   testRenderOutputActionVariableNaming();
   testAppDoesNotImportRefreshMissingFields();
   testAppDoesNotImportDeriveTrustLevel();
   testSummaryBuilders();
+  testPlainTextRespectsViewModeDataset();
   testOverallPrompt();
   testTimelineIndex();
   testTimelineRangeLatestAtRight();
@@ -745,7 +1039,10 @@ async function run() {
   testBuildCombinedInputPrefersPayloadMissing();
   testRefreshMissingFieldsOverridesStaleMissing();
   testGateChainHasNodes();
+  testDevScriptUsesServer();
   testEtaTimerTotals();
+  testPredictionEvaluationBasic();
+  testEvalPanelRenders();
   await testRunTodayCompletesBeforeAi();
   console.log("All tests passed.");
 }

@@ -90,6 +90,40 @@ def call_doubao(prompt, model, api_key, proxies, system_prompt):
     return message.get("content") or ""
 
 
+def run_collector(target_date=None, timeout=240):
+    script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "collector.py"))
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as fp:
+        output_path = fp.name
+    cmd = [sys.executable, script_path]
+    if target_date:
+        cmd.extend(["--date", target_date])
+    cmd.extend(["--output", output_path])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(detail or "collector failed")
+        with open(output_path, "r", encoding="utf-8") as fp:
+            return json.load(fp)
+    finally:
+        try:
+            os.unlink(output_path)
+        except OSError:
+            pass
+
+
+def persist_auto_snapshot(payload):
+    """Persist last-good snapshot to src/data/auto.json so the frontend can read locally."""
+    try:
+        data_dir = os.path.join(ROOT, "data")
+        os.makedirs(data_dir, exist_ok=True)
+        auto_path = os.path.join(data_dir, "auto.json")
+        with open(auto_path, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2)
+    except Exception:
+        return
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -102,11 +136,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _send_json(self, payload, status=200):
         body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def do_GET(self):
         if self.path == "/ai/status":
@@ -117,7 +154,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
-        if self.path == "/data/history":
+        if self.path in ("/data/history", "/data/refresh"):
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8")
             try:
@@ -126,24 +163,16 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "invalid json"}, status=400)
                 return
             date = (payload.get("date") or "").strip()
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            if date and not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+                self._send_json({"error": "invalid date"}, status=400)
+                return
+            if self.path == "/data/history" and not date:
                 self._send_json({"error": "invalid date"}, status=400)
                 return
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as fp:
-                    output_path = fp.name
-                script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "collector.py"))
-                cmd = [sys.executable, script_path, "--date", date, "--output", output_path]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if result.returncode != 0:
-                    self._send_json({"error": "collector failed", "detail": result.stderr.strip()}, status=502)
-                    return
-                with open(output_path, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                try:
-                    os.unlink(output_path)
-                except OSError:
-                    pass
+                data = run_collector(date or None)
+                if self.path == "/data/refresh":
+                    persist_auto_snapshot(data)
                 self._send_json(data)
                 return
             except Exception as exc:
@@ -189,6 +218,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"id": gate_id, "text": text})
                 return
         except (URLError, HTTPError) as exc:
+            self._send_json({"error": f"ai request failed: {exc}"}, status=502)
+        except Exception as exc:
             self._send_json({"error": f"ai request failed: {exc}"}, status=502)
 
 

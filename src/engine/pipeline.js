@@ -418,10 +418,20 @@ export function runPipeline(input) {
   gates.forEach((gate) => {
     if (!gate.details || !gate.details.inputs) return;
     const sources = {};
+    const timings = {};
+    const observedAtMap = safeInput.__fieldObservedAt || {};
+    const fetchedAtMap = safeInput.__fieldFetchedAt || {};
+    const freshnessMap = safeInput.__fieldFreshness || {};
     Object.keys(gate.details.inputs).forEach((key) => {
       sources[key] = sourceMap[key] || "Derived";
+      timings[key] = {
+        observedAt: observedAtMap[key] || safeInput.__generatedAt || null,
+        fetchedAt: fetchedAtMap[key] || safeInput.__generatedAt || null,
+        freshness: freshnessMap[key] || null,
+      };
     });
     gate.details.sources = sources;
+    gate.details.timings = timings;
   });
 
   return {
