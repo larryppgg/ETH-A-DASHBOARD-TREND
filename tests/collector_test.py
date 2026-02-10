@@ -168,7 +168,7 @@ class TestCollectorFetchJson(unittest.TestCase):
             }
         }
         with patch("scripts.collector.fetch_json", return_value=payload):
-            data, sources, missing = collector.fetch_coingecko_market()
+            data, sources, missing, _meta = collector.fetch_coingecko_market()
         self.assertIn("ethSpotPrice", data, "应返回 ETH 现货价格")
         self.assertEqual(data.get("ethSpotPrice"), 2100)
 

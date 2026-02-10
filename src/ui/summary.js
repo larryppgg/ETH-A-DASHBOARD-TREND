@@ -186,6 +186,37 @@ export function buildActionSummary(output = {}) {
   const detail = `对冲 ${output.hedge ? "ON" : "OFF"} · 置信度 ${formatShort(output.confidence)}`;
   const drivers = (output.reasonsTop3 || []).map((item) => item.text);
   const blocks = output.riskNotes || [];
+  const watchFieldsByGate = {
+    G0: ["dxy5d", "us2yWeekBp", "fciUpWeeks"],
+    V1: ["stablecoin30d", "etf10d", "exchStableDelta"],
+    V2: ["current2y", "currentDxy", "policyWindow"],
+    "D-ATAF": ["rrpChange", "tgaChange", "srfChange"],
+    V3: ["liquidationUsd", "crowdingIndex", "shortFailure"],
+    V4: ["exchBalanceTrend", "mcapElasticity", "floatDensity"],
+    V5: ["etf1d", "etf5d", "volumeConfirm"],
+    "V6.2": ["mappingRatioDown", "rsdScore", "lstcScore"],
+    DG: ["distributionGateCount"],
+    SC: ["trendMomentum", "divergence"],
+    BE: ["cognitivePotential", "liquidityPotential"],
+    Tri: ["deltaES", "roughPath"],
+  };
+
+  const reasonGateIds = (output.reasonsTop3 || [])
+    .map((item) => item.gateId)
+    .filter(Boolean);
+  const stressedGateIds = (output.gates || [])
+    .filter((gate) => gate && gate.status && gate.status !== "open")
+    .map((gate) => gate.id);
+  const watchGateIds = Array.from(new Set([...reasonGateIds, ...stressedGateIds]));
+  const watchKeys = [];
+  watchGateIds.forEach((gateId) => {
+    const normalized = gateId === "3域" ? "Tri" : gateId;
+    const keys = watchFieldsByGate[normalized] || watchFieldsByGate[gateId] || [];
+    keys.forEach((key) => {
+      if (!watchKeys.includes(key)) watchKeys.push(key);
+    });
+  });
+
   let humanAdvice = "维持当前仓位，等待更多确认信号。";
   if (output.state === "A") {
     humanAdvice = "偏进攻：可小步加仓，前提是资金流和成交量继续同步走强。";
@@ -194,10 +225,33 @@ export function buildActionSummary(output = {}) {
   } else if (output.state === "C") {
     humanAdvice = "偏避险：优先降风险敞口，避免追涨，先看风险信号是否钝化。";
   }
+
+  const avoid = [];
+  if (output.state === "A") {
+    avoid.push("避免一次性加满仓或上高杠杆，优先分批验证。");
+    avoid.push("突破未验证/成交量不确认时，避免追涨。");
+  } else if (output.state === "B") {
+    avoid.push("避免在关键指标衰减/过期时做方向性重仓。");
+    avoid.push("避免把短期反弹当趋势反转，除非反证条件被满足。");
+  } else if (output.state === "C") {
+    avoid.push("避免抄底加杠杆；先等宏观/流动性信号回暖。");
+    avoid.push("避免忽略结构红灯（映射/分发比走坏等）。");
+  }
+  if ((output.riskNotes || []).some((note) => String(note).includes("红灯"))) {
+    avoid.push("存在结构红灯时，避免做高β进攻动作。");
+  }
+
+  const watch = watchKeys
+    .filter((key) => fieldMeta[key])
+    .slice(0, 3)
+    .map((key) => `${fieldMeta[key].label}：${fieldMeta[key].desc}`);
+
   return {
     action,
     detail,
     humanAdvice,
+    avoid,
+    watch,
     drivers,
     blocks,
   };

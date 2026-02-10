@@ -31,6 +31,20 @@
     </header>
 
     <main class="shell">
+      <nav class="quick-nav" id="quickNav" aria-label="快速导航">
+        <a class="nav-item" href="#runBar">运行</a>
+        <a class="nav-item" href="#timelinePanel">时间轴</a>
+        <a class="nav-item" href="#statusPanel">态势</a>
+        <a class="nav-item" href="#gateAuditPanel">闸门审计</a>
+        <a class="nav-item" href="#actionPanel">行动</a>
+        <a class="nav-item" href="#reasonsPanel">证据</a>
+        <a class="nav-item" href="#aiPanelSection">AI</a>
+        <a class="nav-item" href="#trendPanel">趋势</a>
+        <a class="nav-item" href="#evalPanelSection">评估</a>
+        <a class="nav-item" href="#dataPanelSection">数据台</a>
+        <button class="ghost nav-top" id="navTopBtn" type="button">回到顶部</button>
+      </nav>
+
       <section class="panel run-bar" id="runBar">
         <div class="run-bar-header">
           <div>
@@ -112,9 +126,18 @@
             <strong id="runStageAi">待运行</strong>
           </div>
         </div>
+        <div class="run-advice" id="runAdvice">
+          <div class="run-advice-title">运行诊断与建议</div>
+          <div class="run-advice-body" id="runAdviceBody">待运行：点击“今日运行”开始。</div>
+          <div class="run-advice-actions">
+            <button id="quickFetchBtn" class="ghost" type="button">自动抓取（本地优先）</button>
+            <button id="quickForceFetchBtn" class="ghost" type="button">强制抓取（外部刷新）</button>
+            <button id="quickRerunBtn" class="ghost" type="button">重试今日运行</button>
+          </div>
+        </div>
       </section>
 
-      <section class="panel timeline-panel">
+      <section class="panel timeline-panel" id="timelinePanel">
         <div class="panel-title">时间轴总览</div>
         <div class="timeline-overview" id="timelineOverview"></div>
         <div class="timeline-tooltip" id="timelineTooltip">--</div>
@@ -136,7 +159,7 @@
         </div>
       </section>
 
-      <section class="panel status-panel">
+      <section class="panel status-panel" id="statusPanel">
         <div class="status-core">
           <div class="status-pill" id="statusBadge">B</div>
           <div>
@@ -171,9 +194,10 @@
             <div class="stat-value" id="distributionValue">0 / 30D</div>
           </div>
         </div>
+        <div class="key-evidence" id="keyEvidence"></div>
       </section>
 
-      <section class="panel gate-audit-panel">
+      <section class="panel gate-audit-panel" id="gateAuditPanel">
         <div class="panel-title">闸门链路 · 审计面板</div>
         <div class="gate-audit-grid">
           <div class="gate-chain" id="gateChain"></div>
@@ -181,12 +205,20 @@
         </div>
       </section>
 
-      <section class="panel action-panel">
+      <section class="panel action-panel" id="actionPanel">
         <div class="panel-title">行动映射 · 风险与反证</div>
         <div class="action-block">
           <div class="action-label">建议动作</div>
           <div class="action-value" id="actionSummary">--</div>
           <div class="action-sub" id="actionDetail">--</div>
+        </div>
+        <div class="action-block">
+          <div class="action-label">不要做什么</div>
+          <div class="action-list" id="actionAvoid">--</div>
+        </div>
+        <div class="action-block">
+          <div class="action-label">下一步验证点</div>
+          <div class="action-list" id="actionWatch">--</div>
         </div>
         <div class="action-block">
           <div class="action-label">反证条件</div>
@@ -228,7 +260,7 @@
         </div>
       </section>
 
-      <section class="panel reasons">
+      <section class="panel reasons" id="reasonsPanel">
         <div class="panel-title">证据摘要 · Top3 驱动</div>
         <ol id="topReasons" class="reason-list"></ol>
         <div class="panel-title">危险信号与结构注记</div>
@@ -237,13 +269,13 @@
         <div class="notes" id="evidenceHints">--</div>
       </section>
 
-      <section class="panel ai-panel">
+      <section class="panel ai-panel" id="aiPanelSection">
         <div class="panel-title">AI 解读</div>
         <div class="ai-status" id="aiStatus">AI 离线解读待机</div>
         <div id="aiPanel" class="ai-body"></div>
       </section>
 
-      <section class="panel trend">
+      <section class="panel trend" id="trendPanel">
         <div class="panel-title">历史趋势</div>
         <div class="trend-grid">
           <div class="trend-card">
@@ -264,12 +296,12 @@
         </div>
       </section>
 
-      <section class="panel eval-panel">
+      <section class="panel eval-panel" id="evalPanelSection">
         <div class="panel-title">预测评估 · 发布门禁</div>
         <div id="evalPanel" class="eval-body"></div>
       </section>
 
-      <section class="panel data-panel">
+      <section class="panel data-panel" id="dataPanelSection">
         <div class="panel-title">数据台 · 自动抓取与输入</div>
         <div class="workflow">
           <div class="workflow-step">
@@ -313,6 +345,17 @@
           <button id="exportCsvBtn" class="ghost">导出 CSV</button>
         </div>
         <div class="panel-title">数据覆盖矩阵</div>
+        <div class="coverage-controls">
+          <input id="coverageSearch" class="coverage-search" type="search" placeholder="搜索字段（如 dxy / ETF / 映射）" />
+          <select id="coverageFilter" class="coverage-filter" aria-label="覆盖矩阵过滤">
+            <option value="all">全部</option>
+            <option value="key">关键证据</option>
+            <option value="missing">缺失</option>
+            <option value="aging">衰减</option>
+            <option value="stale">过期</option>
+          </select>
+          <button id="coverageClearBtn" class="ghost" type="button">清除</button>
+        </div>
         <div id="coverageList" class="coverage-grid"></div>
         <div class="data-hint">点击闸门可追溯输入与规则命中。覆盖矩阵按闸门分组显示来源与用途。</div>
       </section>

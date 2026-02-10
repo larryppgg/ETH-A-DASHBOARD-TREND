@@ -26,6 +26,8 @@ const aiStatusKey = "eth_a_dashboard_ai_status_v1";
 const viewModeKey = "eth_a_dashboard_view_mode_v1";
 
 const elements = {
+  quickNav: document.getElementById("quickNav"),
+  navTopBtn: document.getElementById("navTopBtn"),
   runBtn: document.getElementById("runBtn"),
   clearBtn: document.getElementById("clearBtn"),
   viewPlainBtn: document.getElementById("viewPlainBtn"),
@@ -79,9 +81,12 @@ const elements = {
   healthTimeliness: document.getElementById("healthTimeliness"),
   healthQuality: document.getElementById("healthQuality"),
   statusOverview: document.getElementById("statusOverview"),
+  keyEvidence: document.getElementById("keyEvidence"),
   etaValue: document.getElementById("etaValue"),
   actionSummary: document.getElementById("actionSummary"),
   actionDetail: document.getElementById("actionDetail"),
+  actionAvoid: document.getElementById("actionAvoid"),
+  actionWatch: document.getElementById("actionWatch"),
   counterfactuals: document.getElementById("counterfactuals"),
   missingImpact: document.getElementById("missingImpact"),
   workflowFetch: document.getElementById("workflowFetch"),
@@ -108,6 +113,14 @@ const elements = {
   historyDate: document.getElementById("historyDate"),
   historyHint: document.getElementById("historyHint"),
   evalPanel: document.getElementById("evalPanel"),
+  runAdvice: document.getElementById("runAdvice"),
+  runAdviceBody: document.getElementById("runAdviceBody"),
+  quickFetchBtn: document.getElementById("quickFetchBtn"),
+  quickForceFetchBtn: document.getElementById("quickForceFetchBtn"),
+  quickRerunBtn: document.getElementById("quickRerunBtn"),
+  coverageSearch: document.getElementById("coverageSearch"),
+  coverageFilter: document.getElementById("coverageFilter"),
+  coverageClearBtn: document.getElementById("coverageClearBtn"),
 };
 
 function cloneJson(value) {
@@ -419,6 +432,34 @@ function applyCoverageFieldAi(aiPayload, date = selectedDate) {
     }
     node.setAttribute("data-state", target.status || "pending");
     textNode.textContent = target.text || "等待生成...";
+  });
+
+  // Inline gate AI (audit/inspector) and inline field AI (key evidence chips).
+  document.querySelectorAll("[data-gate-ai-inline]").forEach((node) => {
+    if (!node || typeof node.getAttribute !== "function") return;
+    const gateId = node.getAttribute("data-gate-ai-inline");
+    const target = gateMap.get(gateId);
+    const textNode = node.querySelector(".coverage-ai-text");
+    if (!target) {
+      node.setAttribute("data-state", "pending");
+      if (textNode) textNode.textContent = "等待生成...";
+      return;
+    }
+    node.setAttribute("data-state", target.status || "pending");
+    if (textNode) textNode.textContent = target.text || "等待生成...";
+  });
+
+  document.querySelectorAll("[data-field-ai-inline]").forEach((node) => {
+    if (!node || typeof node.getAttribute !== "function") return;
+    const key = node.getAttribute("data-field-ai-inline");
+    const target = fieldMap.get(key);
+    if (!target) {
+      node.setAttribute("data-state", "pending");
+      node.textContent = "AI：等待生成...";
+      return;
+    }
+    node.setAttribute("data-state", target.status || "pending");
+    node.textContent = target.text || "AI：等待生成...";
   });
 }
 
@@ -765,6 +806,15 @@ function showSourceStatus(text) {
 function showRunStatus(text) {
   if (!elements.runStatus) return;
   elements.runStatus.textContent = text || "";
+  // Keep the diagnostic panel in sync during runs; renderOutput will override with structured advice.
+  if (elements.runAdviceBody && text) {
+    elements.runAdviceBody.textContent = text;
+  }
+}
+
+function setRunAdvice(text) {
+  if (!elements.runAdviceBody) return;
+  elements.runAdviceBody.textContent = text || "";
 }
 
 const etaTimer = createEtaTimer();
@@ -778,6 +828,105 @@ function updateEtaDisplay() {
 let selectedDate = null;
 let timelineIndex = buildTimelineIndex([]);
 let historyWindow = buildDateWindow(new Date(), 365);
+
+function setupQuickNav() {
+  if (!elements.quickNav) return;
+  const items = Array.from(elements.quickNav.querySelectorAll("a.nav-item"));
+  const links = items
+    .map((item) => ({ node: item, href: item.getAttribute("href") }))
+    .filter((item) => item.href && item.href.startsWith("#"));
+  const targets = links
+    .map((item) => ({ ...item, target: document.querySelector(item.href) }))
+    .filter((item) => item.target);
+
+  links.forEach(({ node, href }) => {
+    const target = document.querySelector(href);
+    if (!target) return;
+    node.addEventListener("click", (event) => {
+      event.preventDefault();
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
+  if (elements.navTopBtn) {
+    elements.navTopBtn.addEventListener("click", () => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }
+
+  const setActive = (href) => {
+    items.forEach((item) => item.classList.remove("active"));
+    const hit = items.find((item) => item.getAttribute("href") === href);
+    if (hit) hit.classList.add("active");
+  };
+
+  if (targets.length) {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => (b.intersectionRatio || 0) - (a.intersectionRatio || 0))[0];
+        if (!visible) return;
+        const match = targets.find((item) => item.target === visible.target);
+        if (match) setActive(match.href);
+      },
+      { root: null, threshold: [0.18, 0.26, 0.34] }
+    );
+    targets.forEach((item) => observer.observe(item.target));
+  }
+}
+
+function applyCoverageControls() {
+  if (!elements.coverageList) return;
+  const query = (elements.coverageSearch?.value || "").trim().toLowerCase();
+  const filter = (elements.coverageFilter?.value || "all").trim();
+  const rows = Array.from(elements.coverageList.querySelectorAll(".coverage-row"));
+  rows.forEach((row) => {
+    const key = (row.getAttribute("data-field-key") || "").toLowerCase();
+    const label = (row.querySelector(".coverage-label")?.textContent || "").toLowerCase();
+    const source = (row.querySelector(".coverage-cell.source")?.textContent || "").toLowerCase();
+    const matchesQuery = !query || key.includes(query) || label.includes(query) || source.includes(query);
+
+    let matchesFilter = true;
+    if (filter === "missing") matchesFilter = row.classList.contains("missing");
+    else if (filter === "aging") matchesFilter = row.classList.contains("aging");
+    else if (filter === "stale") matchesFilter = row.classList.contains("stale");
+    else if (filter === "key") matchesFilter = row.classList.contains("key-evidence");
+
+    row.style.display = matchesQuery && matchesFilter ? "" : "none";
+  });
+
+  // Hide empty sections only when user is filtering/searching; default view keeps all sections visible.
+  const shouldHideEmpty = Boolean(query) || filter !== "all";
+  elements.coverageList.querySelectorAll(".coverage-section").forEach((section) => {
+    if (!shouldHideEmpty) {
+      section.style.display = "";
+      return;
+    }
+    const visibleRows = Array.from(section.querySelectorAll(".coverage-row")).some(
+      (row) => row.style.display !== "none"
+    );
+    // Derived sections are always shown (they have no .coverage-row).
+    const hasDerived = Boolean(section.querySelector(".coverage-derived"));
+    section.style.display = visibleRows || hasDerived ? "" : "none";
+  });
+}
+
+function setupCoverageControls() {
+  if (elements.coverageSearch) {
+    elements.coverageSearch.addEventListener("input", () => applyCoverageControls());
+  }
+  if (elements.coverageFilter) {
+    elements.coverageFilter.addEventListener("change", () => applyCoverageControls());
+  }
+  if (elements.coverageClearBtn) {
+    elements.coverageClearBtn.addEventListener("click", () => {
+      if (elements.coverageSearch) elements.coverageSearch.value = "";
+      if (elements.coverageFilter) elements.coverageFilter.value = "all";
+      applyCoverageControls();
+    });
+  }
+}
 
 function setHistoryHint(text) {
   if (!elements.historyHint) return;
@@ -840,6 +989,7 @@ function renderSnapshot(history, date) {
   if (record) {
     renderOutput(elements, record, history);
     applyCoverageFieldAi(aiCacheForDate(record.date), record.date);
+    applyCoverageControls();
     updateRunMetaFromRecord(record);
     if (elements.inputJson) {
       elements.inputJson.value = JSON.stringify(record.input, null, 2);
@@ -852,6 +1002,7 @@ function renderSnapshot(history, date) {
     const fallback = history[history.length - 1];
     renderOutput(elements, fallback, history);
     applyCoverageFieldAi(aiCacheForDate(fallback.date), fallback.date);
+    applyCoverageControls();
     syncHistorySelection(fallback.date);
   }
 }
@@ -1033,6 +1184,18 @@ async function runToday(options = {}) {
         : errors;
       showError(errorText);
       showRunStatus("运行失败：字段不完整");
+      if (elements.runAdviceBody) {
+        const next =
+          targetDate === dateKey()
+            ? "建议：先点“强制抓取（外部刷新）”，再点“重试今日运行”。"
+            : "建议：换一个更近的历史日期回放，或先运行最新日期再回放历史。";
+        setRunAdvice(
+          `运行失败：字段不完整。\n` +
+            (missing.length ? `缺失：${missing.map((item) => humanizeFieldName(item)).join("、")}\n` : "") +
+            (staleHints.length ? `${staleHints.join(" / ")}\n` : "") +
+            `${next}`
+        );
+      }
       setWorkflowStatus(elements.workflowValidate, "失败");
       setRunStage(elements.runStageValidate, "失败");
       return;
@@ -1338,6 +1501,18 @@ elements.fetchBtn?.addEventListener("click", () =>
 elements.forceFetchBtn?.addEventListener("click", () =>
   autoFetch({ targetDate: elements.runDate.value || dateKey(), force: true })
 );
+elements.quickFetchBtn?.addEventListener("click", () =>
+  autoFetch({ targetDate: elements.runDate.value || dateKey(), force: false })
+);
+elements.quickForceFetchBtn?.addEventListener("click", () =>
+  autoFetch({ targetDate: elements.runDate.value || dateKey(), force: true })
+);
+elements.quickRerunBtn?.addEventListener("click", () => {
+  if (elements.runDate) {
+    elements.runDate.value = dateKey();
+  }
+  runToday({ mode: "auto", forceRefresh: true });
+});
 if (elements.timelineRange) {
   elements.timelineRange.addEventListener("input", () => {
     const history = loadHistory();
@@ -1446,6 +1621,8 @@ if (elements.timelineOverview) {
 window.__runToday__ = () => runToday({ mode: "auto" });
 window.__autoFetch__ = autoFetch;
 
+setupQuickNav();
+setupCoverageControls();
 syncHistoryWindow();
 
 try {

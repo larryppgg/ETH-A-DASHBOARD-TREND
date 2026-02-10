@@ -883,6 +883,7 @@ def fetch_coingecko_market(target_date=None):
         volume_now, _prev_vol = chart_value_at_date(chart.get("total_volumes"), target_date) if chart else (None, None)
         volume_24h = volume_now or volume_24h
         mcap_elasticity = market_cap / volume_24h if volume_24h else 0
+        obs_stamp = f"{target_date}T00:00:00Z" if target_date else None
         return (
             {
                 "ethSpotPrice": eth_spot,
@@ -901,6 +902,16 @@ def fetch_coingecko_market(target_date=None):
                 "divergence": "CoinGecko: history (placeholder)",
             },
             [],
+            {
+                "observedAt": {
+                    "ethSpotPrice": obs_stamp,
+                    "mcapGrowth": obs_stamp,
+                    "mcapElasticity": obs_stamp,
+                    "floatDensity": obs_stamp,
+                    "trendMomentum": obs_stamp,
+                    "divergence": obs_stamp,
+                }
+            },
         )
     url = (
         "https://api.coingecko.com/api/v3/coins/ethereum"
@@ -910,6 +921,7 @@ def fetch_coingecko_market(target_date=None):
     if not isinstance(data, dict) or not data.get("market_data"):
         return ({}, {}, ["mcapGrowth", "mcapElasticity", "floatDensity", "trendMomentum", "divergence"])
     market = data.get("market_data", {})
+    last_updated = market.get("last_updated") or data.get("last_updated")
     eth_spot = market.get("current_price", {}).get("usd", 0)
     market_cap = market.get("market_cap", {}).get("usd", 0)
     volume_24h = market.get("total_volume", {}).get("usd", 0)
@@ -938,6 +950,16 @@ def fetch_coingecko_market(target_date=None):
             "divergence": "CoinGecko: price_change_percentage_24h",
         },
         [],
+        {
+            "observedAt": {
+                "ethSpotPrice": last_updated,
+                "mcapGrowth": last_updated,
+                "mcapElasticity": last_updated,
+                "floatDensity": last_updated,
+                "trendMomentum": last_updated,
+                "divergence": last_updated,
+            }
+        },
     )
 
 
