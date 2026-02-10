@@ -939,7 +939,7 @@ async function runToday(options = {}) {
     setRunStage(elements.runStageAi, "待运行");
     etaTimer.start("total", Date.now());
     const schemaKeys = Object.keys(inputSchema);
-    const { mode = "auto" } = options;
+    const { mode = "auto", forceRefresh = false } = options;
     const history = loadHistory();
 
     const baseRecord = history.find((item) => item.date === targetDate);
@@ -957,6 +957,19 @@ async function runToday(options = {}) {
       setWorkflowStatus(elements.workflowFetch, "检查中");
       setRunStage(elements.runStageFetch, "检查中");
       etaTimer.start("fetch", Date.now());
+
+      // "今日运行" 是显式的用户动作：必须刷新抓取时间，避免“看起来没有更新”。
+      // 观测时间是否变化取决于数据源本身是否更新（例如月度/周度数据不会每次都变）。
+      if (forceRefresh && targetDate === dateKey()) {
+        showRunStatus("强制刷新今日数据（更新抓取时间）...");
+        const refreshed = await autoFetch({ targetDate, force: true });
+        if (refreshed) {
+          customInput = mergeInputsPreferFresh(customInput, refreshed, schemaKeys, targetDate);
+          coerceInputTypes(customInput);
+          hydrateFieldFreshness(customInput, targetDate);
+          applyHalfLifeGate(customInput, schemaKeys, targetDate);
+        }
+      }
 
       // 1) 先尝试使用本地 auto.json（不触发外部抓取），再按需触发外部刷新补齐缺失。
       if (needsAutoFetch(customInput, schemaKeys)) {
@@ -1289,7 +1302,13 @@ function initWorkflow() {
   setWorkflowStatus(elements.workflowReplay, "待运行");
 }
 
-elements.runBtn.addEventListener("click", () => runToday({ mode: "auto" }));
+elements.runBtn.addEventListener("click", () => {
+  // Button label is "今日运行": always run for today and refresh once.
+  if (elements.runDate) {
+    elements.runDate.value = dateKey();
+  }
+  runToday({ mode: "auto", forceRefresh: true });
+});
 elements.clearBtn.addEventListener("click", clearHistory);
 elements.viewPlainBtn?.addEventListener("click", () => setViewMode("plain", { rerender: true }));
 elements.viewExpertBtn?.addEventListener("click", () => setViewMode("expert", { rerender: true }));
