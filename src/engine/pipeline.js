@@ -14,10 +14,42 @@ import { evalPhase } from "./rules/phase.js";
 import { evalBE } from "./rules/be.js";
 import { evalTriDomain } from "./rules/tridomain.js";
 import { evalATAF } from "./rules/ataf.js";
-import { calculateStateBias, deriveState, applyStateCaps, computeBeta } from "./rules/state.js";
+import {
+  calculateStateBias,
+  deriveState,
+  applyStateCaps,
+  applyDriftDegrade,
+  computeBeta,
+} from "./rules/state.js";
 
-export function runPipeline(input) {
+export function runPipeline(input, runtime = {}) {
   const safeInput = input;
+  const runtimeSafe = runtime || {};
+  const driftInput = runtimeSafe.drift || {};
+  const driftLevel =
+    driftInput.level === "danger" || driftInput.level === "warn" || driftInput.level === "ok"
+      ? driftInput.level
+      : "ok";
+  const driftMultiplier =
+    Number.isFinite(driftInput.betaMultiplier) && driftInput.betaMultiplier > 0
+      ? driftInput.betaMultiplier
+      : driftLevel === "danger"
+      ? 0.72
+      : driftLevel === "warn"
+      ? 0.86
+      : 1;
+  const driftNote =
+    driftInput.note ||
+    (driftLevel === "danger"
+      ? "预测命中率偏离基线，执行强降级"
+      : driftLevel === "warn"
+      ? "预测命中率低于基线，执行温和降级"
+      : "预测质量稳定");
+  const driftAccuracy = Number.isFinite(driftInput.accuracy) ? driftInput.accuracy : null;
+  const driftBaseline = Number.isFinite(driftInput.baseline) ? driftInput.baseline : null;
+  const driftSampleSize = Number.isFinite(driftInput.sampleSize) ? driftInput.sampleSize : null;
+  const executionCostBps =
+    Number.isFinite(runtimeSafe.costBps) && runtimeSafe.costBps > 0 ? runtimeSafe.costBps : 12;
   const sourceMap = safeInput.__sources || {};
   const gates = [];
   const macro = evalMacro(safeInput);
@@ -227,6 +259,7 @@ export function runPipeline(input) {
   const baseScore = calculateStateBias(macro, liquidity, riskSwitch.riskOn, bpi, leverage, danger, safeInput);
   let state = deriveState(baseScore, macro, danger);
   state = applyStateCaps(state, macro);
+  state = applyDriftDegrade(state, driftLevel);
 
   const bcm = evalBCM(safeInput, liquidity, macro, etf, phase);
   const hpm = evalHPM(state, phase, tri);
@@ -353,7 +386,8 @@ export function runPipeline(input) {
     half: leverage.betaPenaltyHalf,
     extra: Boolean(safeInput.prevEtfExtremeOutflow),
   };
-  const beta = computeBeta(state, penalties, betaCap);
+  const betaRaw = computeBeta(state, penalties, betaCap);
+  let beta = clamp(Math.min(betaRaw * driftMultiplier, betaCap), 0, 1);
 
   const distributionBoost =
     safeInput.distributionGateCount >= 2 ? 0.03 * (safeInput.distributionGateCount - 1) : 0;
@@ -364,8 +398,33 @@ export function runPipeline(input) {
   confidence += danger.riskWeight ? -0.04 : 0;
   confidence = clamp(confidence * svc.confidenceMultiplier + distributionBoost + reversalBoost, 0.2, 0.95);
 
+  const previousBeta = Number.isFinite(runtimeSafe.previousBeta) ? runtimeSafe.previousBeta : beta;
+  const turnover = Math.abs(beta - previousBeta);
+  const expectedCostPct = (turnover * executionCostBps) / 100;
+  const edgePct = Math.max(0.02, Math.max(0, confidence - 0.5) * 1.6);
+  const costPressure = expectedCostPct / edgePct;
+  let executionLevel = "ok";
+  let executionMultiplier = 1;
+  if (costPressure >= 0.7) {
+    executionLevel = "high";
+    executionMultiplier = 0.82;
+  } else if (costPressure >= 0.45) {
+    executionLevel = "medium";
+    executionMultiplier = 0.9;
+  }
+  beta = clamp(Math.min(beta * executionMultiplier, betaCap), 0, 1);
+
   const extremeAllowed =
-    be.pass && tri.allow && svc.score >= 7 && !macro.closed && !danger.tripleHit && safeInput.deltaES <= 0.6;
+    be.pass &&
+    tri.allow &&
+    svc.score >= 7 &&
+    !macro.closed &&
+    !danger.tripleHit &&
+    safeInput.deltaES <= 0.6 &&
+    driftLevel === "ok" &&
+    executionLevel === "ok";
+
+  const hedge = state === "C" || danger.tripleHit || driftLevel === "danger";
 
   gates.push({
     id: "DG",
@@ -380,6 +439,27 @@ export function runPipeline(input) {
         confidenceBoost: formatNumber(distributionBoost, 3),
       },
       rules: safeInput.distributionGateCount >= 2 ? ["置信度加成"] : ["未达门槛"],
+    },
+  });
+
+  gates.push({
+    id: "QG",
+    name: "预测质量/漂移门",
+    status: driftLevel === "danger" ? "closed" : driftLevel === "warn" ? "warn" : "open",
+    note: driftNote,
+    details: {
+      inputs: {
+        asOfDate: runtimeSafe.asOfDate || null,
+        horizon: Number.isFinite(driftInput.horizon) ? driftInput.horizon : 7,
+        sampleSize: driftSampleSize,
+        accuracy: driftAccuracy !== null ? formatNumber(driftAccuracy * 100, 2) : null,
+      },
+      calc: {
+        level: driftLevel,
+        baseline: driftBaseline !== null ? formatNumber(driftBaseline * 100, 2) : null,
+        betaMultiplier: formatNumber(driftMultiplier, 2),
+      },
+      rules: [driftNote],
     },
   });
 
@@ -398,6 +478,18 @@ export function runPipeline(input) {
   if (safeInput.distributionGateCount >= 2) {
     reasons.push({ text: "TradFi 分发闸门打开", weight: 5, gateId: "DG" });
   }
+  if (driftLevel === "warn") {
+    reasons.push({ text: "预测质量漂移，温和降级", weight: 6, gateId: "QG" });
+  }
+  if (driftLevel === "danger") {
+    reasons.push({ text: "预测质量高漂移，强制降级", weight: 9, gateId: "QG" });
+  }
+  if (executionLevel === "medium") {
+    reasons.push({ text: "交易摩擦偏高，压低 β", weight: 5, gateId: "ACT" });
+  }
+  if (executionLevel === "high") {
+    reasons.push({ text: "交易成本过高，显著压低 β", weight: 7, gateId: "ACT" });
+  }
 
   const reasonsTop3 = reasons
     .sort((a, b) => b.weight - a.weight)
@@ -408,6 +500,11 @@ export function runPipeline(input) {
     ...danger.riskSignals,
     ...svc.redLights.map((text) => `结构红灯：${text}`),
     etf.breakoutNote,
+    `漂移门：${driftNote}`,
+    `执行成本：${executionLevel.toUpperCase()}（换手 ${formatNumber(turnover, 2)} / 成本 ${formatNumber(
+      expectedCostPct,
+      3
+    )}%）`,
     `BPI：${bpi.label}（强度 ${bpi.strengthText} / 建议 ${bpi.betaHint}）`,
     `BCM：牛 ${formatNumber(bcm.bullScore, 2)} / 熊 ${formatNumber(bcm.bearScore, 2)}`,
     bcm.conflicts.length ? `冲突：${bcm.conflicts.join(" / ")}` : "冲突：无",
@@ -437,12 +534,31 @@ export function runPipeline(input) {
   return {
     state,
     beta,
+    betaRaw,
     betaCap,
-    hedge: state === "C" || danger.tripleHit,
+    hedge,
     phaseLabel: phase.label,
     confidence,
     extremeAllowed,
     distributionGate: safeInput.distributionGateCount,
+    modelRisk: {
+      level: driftLevel,
+      note: driftNote,
+      accuracy: driftAccuracy,
+      baseline: driftBaseline,
+      sampleSize: driftSampleSize,
+      betaMultiplier: driftMultiplier,
+    },
+    execution: {
+      level: executionLevel,
+      previousBeta,
+      turnover,
+      costBps: executionCostBps,
+      expectedCostPct,
+      edgePct,
+      costPressure,
+      betaMultiplier: executionMultiplier,
+    },
     reasonsTop3,
     riskNotes: riskNotesList,
     gates: [
@@ -458,14 +574,20 @@ export function runPipeline(input) {
             betaBase: state === "A" ? 0.75 : state === "B" ? 0.45 : 0.2,
             penalties,
             betaCap: formatNumber(betaCap, 2),
+            previousBeta: formatNumber(previousBeta, 2),
+            costBps: executionCostBps,
           },
           calc: {
+            betaRaw: formatNumber(betaRaw, 2),
             beta: formatNumber(beta, 2),
-            hedge: state === "C" || danger.tripleHit,
+            hedge,
             extremeAllowed,
             confidence: formatNumber(confidence, 2),
+            turnover: formatNumber(turnover, 2),
+            expectedCostPct: formatNumber(expectedCostPct, 3),
+            executionLevel,
           },
-          rules: ["对冲 SOP", "β 上限修正", "极限重仓许可链"],
+          rules: ["对冲 SOP", "β 上限修正", "极限重仓许可链", "交易成本约束", "漂移降级"],
         },
       },
     ],

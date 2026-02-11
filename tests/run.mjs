@@ -11,6 +11,7 @@ import {
   buildActionSummary,
   buildHealthSummary,
   buildMissingImpact,
+  deriveQualityGate,
   deriveTrustLevel,
   toPlainText,
 } from "../src/ui/summary.js";
@@ -22,7 +23,7 @@ import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder
 import { createEtaTimer } from "../src/ui/etaTimer.js";
 import { buildOverallPrompt } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
-import { computePredictionEvaluation } from "../src/ui/eval.js";
+import { computePredictionEvaluation, deriveDriftSignal } from "../src/ui/eval.js";
 import { shouldAutoRun } from "../src/autoRun.js";
 import {
   needsAutoFetch,
@@ -470,6 +471,13 @@ function testLayoutSkeleton() {
     "healthFreshness",
     "healthTimeliness",
     "healthQuality",
+    "healthDrift",
+    "healthExecution",
+    "decisionPanel",
+    "decisionConclusion",
+    "decisionExecutable",
+    "decisionWhy",
+    "decisionNext",
     "timelineOverview",
     "timelineRange",
     "timelineLabel",
@@ -491,6 +499,10 @@ function testLayoutSkeleton() {
     "viewPlainBtn",
     "viewExpertBtn",
     "evalPanel",
+    "backfill90Btn",
+    "backfill180Btn",
+    "backfill365Btn",
+    "evalBackfillStatus",
   ];
   ids.forEach((id) => {
     assert(html.includes(`id=\"${id}\"`), `布局应包含 ${id}`);
@@ -500,8 +512,8 @@ function testLayoutSkeleton() {
 
 function testCacheBustingAssets() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
-  assert(html.includes("styles.css?v=20260210-2"), "样式应带最新 cache bust 参数");
-  assert(html.includes("app.js?v=20260210-2"), "脚本应带最新 cache bust 参数");
+  assert(html.includes("styles.css?v=20260212-1"), "样式应带最新 cache bust 参数");
+  assert(html.includes("app.js?v=20260212-1"), "脚本应带最新 cache bust 参数");
 }
 
 function testNoInlineRunOnclick() {
@@ -590,6 +602,18 @@ function testSummaryBuilders() {
   assert(action.humanAdvice && action.humanAdvice.length > 4, "行动摘要应包含人话建议");
   const impact = buildMissingImpact({ __missing: ["dxy5d", "etf1d"] });
   assert(impact.length >= 1, "缺失影响应返回列表");
+}
+
+function testQualityGateIncludesModelRisk() {
+  const gate = deriveQualityGate(
+    { __missing: [], __errors: [], __fieldFreshness: {} },
+    { aiStatus: "AI 已生成", driftLevel: "danger", executionLevel: "high" }
+  );
+  assert(gate.level === "danger", "漂移 danger 时质量门禁应降级");
+  assert(
+    gate.reasons.some((item) => item.includes("漂移")) && gate.reasons.some((item) => item.includes("成本")),
+    "门禁理由应覆盖漂移与成本"
+  );
 }
 
 function testPlainTextRespectsViewModeDataset() {
@@ -750,6 +774,54 @@ function testPredictionEvaluationBasic() {
   assert(Array.isArray(evaluation.rows) && evaluation.rows.length === 3, "评估应生成逐日行");
   assert(evaluation.summary.byHorizon["7"], "评估应包含 7D 汇总");
   assert(evaluation.summary.byHorizon["14"], "评估应包含 14D 汇总");
+}
+
+function testPredictionEvaluationAsOfGuard() {
+  const history = [
+    { date: "2026-02-01", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } },
+    { date: "2026-02-08", input: { ethSpotPrice: 1040 }, output: { state: "B", confidence: 0.5 } },
+    { date: "2026-02-15", input: { ethSpotPrice: 980 }, output: { state: "C", confidence: 0.6 } },
+  ];
+  const evaluation = computePredictionEvaluation(history, { horizons: [7], asOfDate: "2026-02-08" });
+  const row0201 = evaluation.rows.find((row) => row.date === "2026-02-01");
+  const row0208 = evaluation.rows.find((row) => row.date === "2026-02-08");
+  assert(row0201.horizons["7"].futureDate === "2026-02-08", "as-of 保护下仅允许使用 asOf 之前的未来样本");
+  assert(row0208.horizons["7"].verdict === "pending", "targetDate 超过 asOf 时应保持 pending，避免时间穿越");
+}
+
+function testDeriveDriftSignal() {
+  const history = [
+    { date: "2026-01-01", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.65 } },
+    { date: "2026-01-08", input: { ethSpotPrice: 980 }, output: { state: "A", confidence: 0.66 } },
+    { date: "2026-01-15", input: { ethSpotPrice: 960 }, output: { state: "A", confidence: 0.67 } },
+    { date: "2026-01-22", input: { ethSpotPrice: 940 }, output: { state: "A", confidence: 0.68 } },
+    { date: "2026-01-29", input: { ethSpotPrice: 920 }, output: { state: "A", confidence: 0.69 } },
+    { date: "2026-02-05", input: { ethSpotPrice: 900 }, output: { state: "A", confidence: 0.7 } },
+    { date: "2026-02-12", input: { ethSpotPrice: 880 }, output: { state: "A", confidence: 0.71 } },
+    { date: "2026-02-19", input: { ethSpotPrice: 860 }, output: { state: "A", confidence: 0.72 } },
+  ];
+  const drift = deriveDriftSignal(history, { horizon: 7, asOfDate: "2026-02-19", minSamples: 4 });
+  assert(drift.level === "danger" || drift.level === "warn", "命中率显著下行时应触发漂移预警");
+  assert(typeof drift.accuracy === "number", "漂移信号应返回可量化 accuracy");
+}
+
+function testPipelineAppliesDriftAndCostControls() {
+  const base = runPipeline(baseInput({ distributionGateCount: 3 }), {
+    drift: { level: "ok" },
+    previousBeta: 0.1,
+    costBps: 10,
+  });
+  const constrained = runPipeline(baseInput({ distributionGateCount: 3 }), {
+    drift: { level: "danger", accuracy: 0.22, baseline: 0.55, sampleSize: 14, note: "7D 命中率偏离" },
+    previousBeta: 0.95,
+    costBps: 60,
+  });
+  assert(constrained.beta <= base.beta, "漂移+成本约束后 beta 不应高于无约束基线");
+  assert(constrained.modelRisk?.level === "danger", "输出应暴露漂移等级");
+  assert(
+    constrained.execution?.level === "high" || constrained.execution?.level === "medium",
+    "输出应暴露成本等级"
+  );
 }
 
 function testBuildCombinedInputPrefersPayloadMissing() {
@@ -980,8 +1052,9 @@ async function testRunTodayCompletesBeforeAi() {
       "历史补齐后不应再提示字段缺失"
     );
     assert(
-      (nodes.aiStatus.textContent || "").includes("离线解读"),
-      "AI 不可用时状态应明确为离线解读"
+      (nodes.aiStatus.textContent || "").includes("离线解读") ||
+        (nodes.aiStatus.textContent || "").includes("本地解读"),
+      "AI 不可用时状态应明确为本地/离线解读"
     );
     assert(
       !(nodes.aiStatus.textContent || "").includes("未启用"),
@@ -1026,6 +1099,7 @@ async function run() {
   testAppDoesNotImportRefreshMissingFields();
   testAppDoesNotImportDeriveTrustLevel();
   testSummaryBuilders();
+  testQualityGateIncludesModelRisk();
   testPlainTextRespectsViewModeDataset();
   testOverallPrompt();
   testTimelineIndex();
@@ -1042,6 +1116,9 @@ async function run() {
   testDevScriptUsesServer();
   testEtaTimerTotals();
   testPredictionEvaluationBasic();
+  testPredictionEvaluationAsOfGuard();
+  testDeriveDriftSignal();
+  testPipelineAppliesDriftAndCostControls();
   testEvalPanelRenders();
   await testRunTodayCompletesBeforeAi();
   console.log("All tests passed.");

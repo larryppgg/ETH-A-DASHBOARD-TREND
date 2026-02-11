@@ -18,6 +18,13 @@ const stateLabels = {
   C: "C / 避险档",
 };
 
+function normalizeGateIdForJump(gateId = "") {
+  if (!gateId) return "";
+  const first = gateId.split("/")[0].trim();
+  if (first === "Tri") return "3域";
+  return first;
+}
+
 export function renderKanban(elements, state, output) {
   const { kanbanA, kanbanB, kanbanC } = elements;
   kanbanA.innerHTML = "";
@@ -169,6 +176,7 @@ function renderInspector(container, gate) {
         <div class="coverage-ai coverage-ai-gate" data-gate-ai-inline="${gate.id}" data-state="pending">
           <span class="coverage-ai-tag">AI 解读</span>
           <span class="coverage-ai-text">等待生成...</span>
+          <button class="coverage-ai-toggle" type="button" hidden>展开</button>
         </div>
       </div>
       <div class="inspector-block">
@@ -237,8 +245,24 @@ export function renderGateChain(container, gates, selectedId, onSelect) {
     container.innerHTML = '<div class="inspector-empty">暂无闸门链路</div>';
     return;
   }
+  const statusCount = gates.reduce(
+    (acc, gate) => {
+      const level = gate?.status || "open";
+      if (level === "closed") acc.closed += 1;
+      else if (level === "warn") acc.warn += 1;
+      else acc.open += 1;
+      return acc;
+    },
+    { open: 0, warn: 0, closed: 0 }
+  );
   container.innerHTML = `
-    <div class="gate-chain-scroll">
+    <div class="gate-chain-head">
+      <span class="chain-kpi">总闸门 ${gates.length}</span>
+      <span class="chain-kpi open">OPEN ${statusCount.open}</span>
+      <span class="chain-kpi warn">WARN ${statusCount.warn}</span>
+      <span class="chain-kpi closed">CLOSED ${statusCount.closed}</span>
+    </div>
+    <div class="gate-chain-grid">
       ${gates
         .map((gate, index) => {
           const active = gate.id === selectedId ? "active" : "";
@@ -260,18 +284,17 @@ export function renderGateChain(container, gates, selectedId, onSelect) {
           ]
             .filter(Boolean)
             .join("");
-          const lead = index > 0 ? '<span class="gate-chain-link" aria-hidden="true"></span>' : "";
           return `
-            <div class="gate-chain-item ${active}" data-gate="${gate.id}">
-              ${lead}
-              <button type="button" class="gate-chain-node ${gate.status}">
+            <button type="button" class="gate-chain-card ${gate.status} ${active}" data-gate="${gate.id}">
+              <span class="gate-chain-step">${String(index + 1).padStart(2, "0")}</span>
+              <span class="gate-chain-node ${gate.status}">
                 <span class="gate-chain-dot"></span>
                 <span class="gate-chain-id">${gate.id}</span>
                 <span class="gate-chain-name">${gate.name}</span>
                 <span class="gate-chain-badges">${badges || `<span class="mini-badge ok">OK</span>`}</span>
                 <span class="gate-chain-note">${toPlainText(gate.note || "")}</span>
-              </button>
-            </div>
+              </span>
+            </button>
           `;
         })
         .join("")}
@@ -321,10 +344,12 @@ export function renderAuditVisual(container, gate) {
       return `
         <div class="audit-row">
           <div class="audit-key">${label}</div>
-          <div class="audit-bar">
-            <span style="width:${barWidth}%"></span>
+          <div class="audit-metric">
+            <div class="audit-bar">
+              <span style="width:${barWidth}%"></span>
+            </div>
+            <div class="audit-value">${display}</div>
           </div>
-          <div class="audit-value">${display}</div>
           <div class="audit-source">${source}<div class="audit-time">${freshness} · 观测 ${observedAt} · 抓取 ${fetchedAt}</div></div>
         </div>
       `;
@@ -350,6 +375,7 @@ export function renderAuditVisual(container, gate) {
     <div class="coverage-ai coverage-ai-gate" data-gate-ai-inline="${gate.id}" data-state="pending">
       <span class="coverage-ai-tag">AI 解读</span>
       <span class="coverage-ai-text">等待生成...</span>
+      <button class="coverage-ai-toggle" type="button" hidden>展开</button>
     </div>
     <div class="audit-section">
       <div class="audit-title">输入与来源</div>
@@ -663,6 +689,7 @@ export function renderCoverage(container, input, output = null) {
             <div class="coverage-ai coverage-ai-gate" data-gate-ai="${gateId}" data-state="pending">
               <span class="coverage-ai-tag">AI 解读</span>
               <span class="coverage-ai-text">等待生成...</span>
+              <button class="coverage-ai-toggle" type="button" hidden>展开</button>
             </div>
           </div>
         `;
@@ -687,6 +714,7 @@ export function renderCoverage(container, input, output = null) {
             );
           const freshnessLabel = freshness?.label || "未知";
           const freshnessClass = freshness?.level || "unknown";
+          const gateTarget = normalizeGateIdForJump(meta.gate || "");
           return `
             <div class="coverage-row ${isMissing ? "missing" : "ok"} ${freshnessClass} ${
               isKeyEvidence ? "key-evidence" : ""
@@ -701,11 +729,19 @@ export function renderCoverage(container, input, output = null) {
                   <span class="coverage-unit">${meta.unit || ""}</span>
                 </div>
                 <div class="coverage-cell source">${source}</div>
-                <div class="coverage-cell status">${isMissing ? "缺失" : "可用"} · ${freshnessLabel} · 观测 ${observedAt} · 抓取 ${fetchedAt}</div>
+                <div class="coverage-cell status">
+                  ${isMissing ? "缺失" : "可用"} · ${freshnessLabel} · 观测 ${observedAt} · 抓取 ${fetchedAt}
+                  ${
+                    gateTarget
+                      ? `<button class="coverage-jump" type="button" data-gate-target="${gateTarget}">定位 ${gateTarget}</button>`
+                      : ""
+                  }
+                </div>
               </div>
               <div class="coverage-ai" data-field-ai="${key}" data-state="pending">
                 <span class="coverage-ai-tag">AI 解读</span>
                 <span class="coverage-ai-text">${isMissing ? "字段缺失，等待补齐后解读" : "等待生成..."}</span>
+                <button class="coverage-ai-toggle" type="button" hidden>展开</button>
               </div>
             </div>
           `;
@@ -740,6 +776,9 @@ export function renderOutput(elements, record, history) {
   elements.lastRun.textContent = record.date;
 
   const actionSummary = buildActionSummary(output);
+  const topReasonText = (output.reasonsTop3 || [])
+    .map((item) => toPlainText(item.text))
+    .join(" / ");
 
   if (elements.statusOverview) {
     const stateIndex = state === "A" ? 0 : state === "B" ? 1 : 2;
@@ -768,15 +807,46 @@ export function renderOutput(elements, record, history) {
 
   const aiStatus =
     typeof localStorage !== "undefined" && typeof localStorage.getItem === "function"
-      ? localStorage.getItem("eth_a_dashboard_ai_status_v1") || "AI 离线解读待机"
-      : "AI 离线解读待机";
-  const health = buildHealthSummary(record.input, { aiStatus });
+      ? localStorage.getItem("eth_a_dashboard_ai_status_v1") || "AI 未联机，已使用本地解读"
+      : "AI 未联机，已使用本地解读";
+  const qualityMeta = {
+    aiStatus,
+    driftLevel: output.modelRisk?.level || "ok",
+    driftNote: output.modelRisk?.note || "",
+    executionLevel: output.execution?.level || "ok",
+  };
+  const health = buildHealthSummary(record.input, qualityMeta);
+  if (typeof document !== "undefined" && document?.body?.dataset) {
+    document.body.dataset.statusLevel = health.qualityLevel || health.level || "ok";
+  }
   if (elements.healthFreshness) elements.healthFreshness.textContent = health.freshnessText;
   if (elements.healthMissing) elements.healthMissing.textContent = health.missingText;
   if (elements.healthProxy) elements.healthProxy.textContent = health.proxyText;
   if (elements.healthAi) elements.healthAi.textContent = health.aiText;
   if (elements.healthTimeliness) elements.healthTimeliness.textContent = health.timelinessText;
   if (elements.healthQuality) elements.healthQuality.textContent = health.qualityText;
+  if (elements.healthDrift) elements.healthDrift.textContent = health.driftText || "--";
+  if (elements.healthExecution) elements.healthExecution.textContent = health.executionText || "--";
+  if (elements.decisionConclusion) {
+    elements.decisionConclusion.textContent = `${stateLabels[state] || state} · ${actionSummary.action}`;
+  }
+  if (elements.decisionExecutable) {
+    elements.decisionExecutable.textContent =
+      health.qualityText === "OK" ? "可执行" : health.qualityText === "WARN" ? "谨慎执行" : "暂不执行";
+    elements.decisionExecutable.className =
+      health.qualityText === "OK"
+        ? "decision-value ok"
+        : health.qualityText === "WARN"
+        ? "decision-value warn"
+        : "decision-value danger";
+  }
+  if (elements.decisionWhy) {
+    elements.decisionWhy.textContent = topReasonText || "暂无核心驱动";
+  }
+  if (elements.decisionNext) {
+    const next = (actionSummary.watch || []).slice(0, 2);
+    elements.decisionNext.textContent = next.length ? next.join(" / ") : "暂无关键观察项";
+  }
   if (elements.runMetaTrust) {
     elements.runMetaTrust.textContent = health.level === "danger" ? "FAIL" : health.level === "warn" ? "WARN" : "OK";
     elements.runMetaTrust.className = health.level === "danger" ? "danger" : health.level === "warn" ? "warn" : "ok";
@@ -850,6 +920,27 @@ export function renderOutput(elements, record, history) {
     elements.evidenceHints.innerHTML = hints.map((item) => `<div>${item}</div>`).join("");
   }
   renderCoverage(elements.coverageList, record.input, output);
+  if (elements.coverageList) {
+    elements.coverageList.querySelectorAll("[data-gate-target]").forEach((node) => {
+      node.addEventListener("click", () => {
+        const gateId = node.getAttribute("data-gate-target");
+        const gate = (output.gates || []).find((item) => item.id === gateId);
+        if (!gate) return;
+        const gateNode = elements.gateList?.querySelector(`[data-gate-id="${gateId}"]`);
+        gateNode?.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (gateNode) {
+          elements.gateList?.querySelectorAll(".gate-item")?.forEach((item) => item.classList.remove("active"));
+          gateNode.classList.add("active");
+        }
+        renderInspector(elements.gateInspector, gate);
+        renderAuditVisual(elements.auditVisual, gate);
+        renderGateChain(elements.gateChain, output.gates, gate.id, (selectedGate) => {
+          renderInspector(elements.gateInspector, selectedGate);
+          renderAuditVisual(elements.auditVisual, selectedGate);
+        });
+      });
+    });
+  }
 
   if (elements.keyEvidence) {
     const list = buildKeyEvidence(output, record.input);
@@ -910,24 +1001,28 @@ export function renderOutput(elements, record, history) {
 
   if (elements.betaTrendMeta) {
     const delta = betaSeries.length > 1 ? betaSeries[betaSeries.length - 1] - betaSeries[0] : 0;
-    elements.betaTrendMeta.textContent = `近 ${historySorted.length} 期 ${delta >= 0 ? "上行" : "下行"} ${formatNumber(Math.abs(delta))}`;
+    elements.betaTrendMeta.textContent = `含义：仓位进攻/防守倾向
+方向：近 ${historySorted.length} 期 ${delta >= 0 ? "上行" : "下行"} ${formatNumber(Math.abs(delta))}
+观察：若 β 上行但成交量未确认，优先按防守档执行`;
   }
   if (elements.confidenceTrendMeta) {
     const delta =
       confidenceSeries.length > 1
         ? confidenceSeries[confidenceSeries.length - 1] - confidenceSeries[0]
         : 0;
-    elements.confidenceTrendMeta.textContent = `近 ${historySorted.length} 期 ${delta >= 0 ? "增强" : "走弱"} ${formatNumber(
-      Math.abs(delta)
-    )}`;
+    elements.confidenceTrendMeta.textContent = `含义：信号一致性与稳定性
+方向：近 ${historySorted.length} 期 ${delta >= 0 ? "增强" : "走弱"} ${formatNumber(Math.abs(delta))}
+观察：置信度走弱时，按“谨慎执行”并提高反证权重`;
   }
   if (elements.fofTrendMeta) {
     const latest = historySorted[historySorted.length - 1]?.output?.fofScore ?? 0;
-    elements.fofTrendMeta.textContent = `当前 FoF ${formatNumber(latest)}（>60 偏宽松，<40 偏紧）`;
+    elements.fofTrendMeta.textContent = `含义：资金环境综合温度
+方向：当前 FoF ${formatNumber(latest)}（>60 偏宽松，<40 偏紧）
+观察：FoF 低位时避免高杠杆追涨，优先等流动性回暖`;
   }
 
   if (elements.evalPanel) {
-    renderPredictionEvaluation(elements.evalPanel, historySorted, record, { aiStatus });
+    renderPredictionEvaluation(elements.evalPanel, historySorted, record, qualityMeta);
   }
 
   if (elements.workflowReplay) elements.workflowReplay.textContent = "可回放";

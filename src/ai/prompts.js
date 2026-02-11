@@ -8,6 +8,8 @@ export function buildSummaryPrompt(output, input) {
       phase: output.phaseLabel,
       confidence: output.confidence,
       extremeAllowed: output.extremeAllowed,
+      modelRisk: output.modelRisk,
+      execution: output.execution,
       reasons: output.reasonsTop3,
       riskNotes: output.riskNotes,
     })}\n\n` +
@@ -24,7 +26,8 @@ export function buildSummaryPrompt(output, input) {
     `2) 【阶段】现在处于什么阶段（用人话解释）；\n` +
     `3) 【为什么】2-3条核心驱动（直接引用可观测指标/闸门）；\n` +
     `4) 【最大风险】1条最关键风险阻断；\n` +
-    `5) 【下一步盯】给1个最关键指标 + 触发阈值（若无精确阈值，用方向+相对强弱）；\n` +
+    `5) 【执行约束】一句话说明漂移/交易成本是否限制仓位；\n` +
+    `6) 【下一步盯】给1个最关键指标 + 触发阈值（若无精确阈值，用方向+相对强弱）；\n` +
     `6) 禁止空话，禁止免责声明，120-180字。`;
 }
 
@@ -38,13 +41,13 @@ export function buildGatePrompt(gate) {
     `输入时间: ${JSON.stringify(details.timings || {})}\n` +
     `计算: ${JSON.stringify(details.calc || {})}\n` +
     `规则: ${JSON.stringify(details.rules || [])}\n\n` +
-    `要求:\n` +
-    `1) 【结论】一句话说明放行/预警/关闭；\n` +
-    `2) 【关键证据】2条：每条必须点名一个可观测指标(字段名+当前值)；\n` +
-    `3) 【动作】1条可执行建议（增/减/等/对冲/观察哪个触发条件）；\n` +
-    `4) 【反证】给1条反证条件（阈值写清，若无精确阈值用方向+强弱）；\n` +
-    `5) 若关键字段“衰减/过期”，必须明确写出“结论受限的原因”；\n` +
-    `6) 90-140字，禁止免责声明。`;
+    `输出格式（必须严格按5行，每行一个小节，使用以下标签）：\n` +
+    `【结论】：一句话说明放行/预警/关闭。\n` +
+    `【依据】：2条证据合并成一句，必须点名可观测指标（字段名+当前值）。\n` +
+    `【动作】：1条可执行建议（增/减/等/对冲/观察触发条件）。\n` +
+    `【反证】：1条反证条件（优先阈值；无精确阈值时写方向+强弱）。\n` +
+    `【时效】：明确“时效通过”或“结论受限”，并点名衰减/过期字段。\n` +
+    `总长度 90-150 字，禁止免责声明，禁止输出额外段落。`;
 }
 
 export function buildOverallPrompt(output, input) {
@@ -57,6 +60,8 @@ export function buildOverallPrompt(output, input) {
       phase: output.phaseLabel,
       confidence: output.confidence,
       extremeAllowed: output.extremeAllowed,
+      modelRisk: output.modelRisk,
+      execution: output.execution,
       reasons: output.reasonsTop3,
       riskNotes: output.riskNotes,
     })}\n\n` +
@@ -77,6 +82,7 @@ export function buildOverallPrompt(output, input) {
     `3) 【未来1-2周预测】至少2个情景：主场景/备选场景，并给出概率倾向（不用硬凑数字，写相对倾向也行）；\n` +
     `4) 【关键反证】2-3条，必须绑定可观测指标与触发阈值；\n` +
     `5) 【执行清单】仓位β、对冲、观察清单(3项以内) + 为什么。\n` +
+    `6) 【执行限制】明确写出漂移门/交易成本是否限制动作。\n` +
     `字数 240-340 字。`;
 }
 
@@ -104,7 +110,7 @@ export function buildFieldPrompt(field, context = {}) {
     `输出要求：\n` +
     `1) 【这代表什么】一句话解释当前值的含义；\n` +
     `2) 【影响】一句话说明对当前动作是加分/减分（结合所属闸门）；\n` +
-    `3) 【时效】一句话说明新鲜度是否足够（新鲜/衰减/过期）；\n` +
+    `3) 【时效】一句话说明新鲜度是否足够（新鲜/衰减/过期），并点名观测时间与抓取时间；\n` +
     `4) 【下一次观察】一句话给出最值得盯的变化方向或阈值；\n` +
     `5) 70-130字，禁止免责声明。`;
 }

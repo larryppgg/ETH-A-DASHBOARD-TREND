@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "fetch": "python3 scripts/collector.py",
+    "backfill": "node scripts/backfill_history.mjs",
     "dev": "python3 scripts/collector.py && python3 scripts/server.py",
     "test": "node tests/run.mjs && python3 tests/collector_test.py"
   }

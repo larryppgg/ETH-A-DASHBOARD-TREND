@@ -32,6 +32,18 @@ function formatRelativeTime(value) {
   return `${diffDays}d`;
 }
 
+function latestObservedAt(input = {}) {
+  const map = input.__fieldObservedAt || {};
+  let latest = null;
+  Object.values(map).forEach((value) => {
+    if (!value) return;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return;
+    if (!latest || date.getTime() > latest.getTime()) latest = date;
+  });
+  return latest ? latest.toISOString() : null;
+}
+
 const plainTermMap = [
   ["SVC 结构强势加成", "链上价值捕获与资金结构偏强（加分）"],
   ["SVC 结构偏弱", "链上价值捕获偏弱（减分）"],
@@ -51,6 +63,9 @@ const plainTermMap = [
   ["Risk-ON", "风险偏好开启条件"],
   ["BCM", "牛熊条件概率矩阵"],
   ["BPI", "买家参与强度指标"],
+  ["预测质量漂移", "模型近期命中率走弱"],
+  ["交易摩擦偏高", "来回换仓成本较高"],
+  ["交易成本过高", "交易摩擦已明显影响执行收益"],
 ];
 
 export function toPlainText(text = "", mode = null) {
@@ -120,6 +135,9 @@ export function deriveQualityGate(input = {}, meta = {}) {
   const trust = deriveTrustLevel(input);
   const timeliness = deriveTimelinessLevel(input);
   const aiStatus = meta.aiStatus || "";
+  const driftLevel = meta.driftLevel || "unknown";
+  const driftNote = meta.driftNote || "";
+  const executionLevel = meta.executionLevel || "ok";
   const explainLevel = aiStatus.includes("生成中") ? "warn" : "ok";
   const reasons = [];
   if (trust.level === "danger") reasons.push("可信度 FAIL（缺失/硬错误/过期字段）");
@@ -127,11 +145,19 @@ export function deriveQualityGate(input = {}, meta = {}) {
   if (timeliness.level === "danger") reasons.push(`时效 FAIL（过期 ${timeliness.staleKeys.length}）`);
   else if (timeliness.level === "warn")
     reasons.push(`时效 WARN（衰减 ${timeliness.agingKeys.length} / 未知 ${timeliness.unknownKeys.length}）`);
+  if (driftLevel === "danger") reasons.push(`漂移 FAIL（${driftNote || "命中率显著偏离基线"}）`);
+  else if (driftLevel === "warn") reasons.push(`漂移 WARN（${driftNote || "命中率低于基线"}）`);
+  if (executionLevel === "high") reasons.push("成本 FAIL（换手成本压制预期收益）");
+  else if (executionLevel === "medium") reasons.push("成本 WARN（交易摩擦偏高）");
   if (explainLevel === "warn") reasons.push("解释未完成（AI 仍在生成）");
   const level =
-    trust.level === "danger" || timeliness.level === "danger"
+    trust.level === "danger" || timeliness.level === "danger" || driftLevel === "danger" || executionLevel === "high"
       ? "danger"
-      : trust.level === "warn" || timeliness.level === "warn" || explainLevel === "warn"
+      : trust.level === "warn" ||
+        timeliness.level === "warn" ||
+        explainLevel === "warn" ||
+        driftLevel === "warn" ||
+        executionLevel === "medium"
       ? "warn"
       : "ok";
   const label = level === "danger" ? "FAIL" : level === "warn" ? "WARN" : "OK";
@@ -164,26 +190,54 @@ export function buildHealthSummary(input = {}, meta = {}) {
     timeliness,
     quality,
     freshnessText: generatedAt
-      ? `更新 ${formatTimestamp(generatedAt)}（距今 ${formatRelativeTime(generatedAt)}）`
-      : "更新 未知",
+      ? `${formatTimestamp(generatedAt)}（距今 ${formatRelativeTime(generatedAt)}）`
+      : "未知",
     missingText: (input.__missing || []).length ? `${(input.__missing || []).length} 项` : "无",
     proxyText,
     aiText: meta.aiStatus || "未连接",
+    driftText:
+      meta.driftLevel === "danger"
+        ? "FAIL"
+        : meta.driftLevel === "warn"
+        ? "WARN"
+        : meta.driftLevel === "ok"
+        ? "OK"
+        : "--",
+    executionText:
+      meta.executionLevel === "high"
+        ? "FAIL"
+        : meta.executionLevel === "medium"
+        ? "WARN"
+        : meta.executionLevel === "ok"
+        ? "OK"
+        : "--",
     timelinessText:
       timeliness.level === "unknown"
         ? "--"
         : timeliness.level === "danger"
-        ? `FAIL（过期 ${timeliness.staleKeys.length}）`
+        ? `${formatTimestamp(latestObservedAt(input))} · FAIL（过期 ${timeliness.staleKeys.length}）`
         : timeliness.level === "warn"
-        ? `WARN（衰减 ${timeliness.agingKeys.length} / 未知 ${timeliness.unknownKeys.length}）`
-        : "OK",
+        ? `${formatTimestamp(latestObservedAt(input))} · WARN（衰减 ${timeliness.agingKeys.length} / 未知 ${timeliness.unknownKeys.length}）`
+        : `${formatTimestamp(latestObservedAt(input))} · OK`,
     qualityText: quality.label,
   };
 }
 
 export function buildActionSummary(output = {}) {
   const action = `${output.state || "-"} / β ${formatShort(output.beta)} / β_cap ${formatShort(output.betaCap)}`;
-  const detail = `对冲 ${output.hedge ? "ON" : "OFF"} · 置信度 ${formatShort(output.confidence)}`;
+  const driftLevel = output.modelRisk?.level || "ok";
+  const executionLevel = output.execution?.level || "ok";
+  const detailParts = [`对冲 ${output.hedge ? "ON" : "OFF"}`, `置信度 ${formatShort(output.confidence)}`];
+  if (typeof output.betaRaw === "number" && Math.abs(output.betaRaw - output.beta) > 0.0001) {
+    detailParts.push(`原始 β ${formatShort(output.betaRaw)} → 有效 β ${formatShort(output.beta)}`);
+  }
+  if (driftLevel !== "ok") {
+    detailParts.push(`漂移 ${driftLevel === "danger" ? "FAIL" : "WARN"}`);
+  }
+  if (executionLevel !== "ok") {
+    detailParts.push(`成本 ${executionLevel === "high" ? "FAIL" : "WARN"}`);
+  }
+  const detail = detailParts.join(" · ");
   const drivers = (output.reasonsTop3 || []).map((item) => item.text);
   const blocks = output.riskNotes || [];
   const watchFieldsByGate = {
@@ -225,6 +279,16 @@ export function buildActionSummary(output = {}) {
   } else if (output.state === "C") {
     humanAdvice = "偏避险：优先降风险敞口，避免追涨，先看风险信号是否钝化。";
   }
+  if (driftLevel === "warn") {
+    humanAdvice += " 另：模型命中率偏离基线，执行温和降级，仓位应比常规更保守。";
+  } else if (driftLevel === "danger") {
+    humanAdvice += " 另：模型高漂移，执行强降级并优先防守。";
+  }
+  if (executionLevel === "medium") {
+    humanAdvice += " 交易摩擦偏高，避免高频来回切换。";
+  } else if (executionLevel === "high") {
+    humanAdvice += " 交易成本过高，优先减少换手并等待更高把握度信号。";
+  }
 
   const avoid = [];
   if (output.state === "A") {
@@ -239,6 +303,12 @@ export function buildActionSummary(output = {}) {
   }
   if ((output.riskNotes || []).some((note) => String(note).includes("红灯"))) {
     avoid.push("存在结构红灯时，避免做高β进攻动作。");
+  }
+  if (executionLevel === "high") {
+    avoid.push("避免为了追信号频繁换仓，当前摩擦成本会吞噬优势。");
+  }
+  if (driftLevel === "danger") {
+    avoid.push("避免把本周期模型输出当作高置信指令，先等待样本修复。");
   }
 
   const watch = watchKeys

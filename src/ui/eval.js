@@ -15,12 +15,13 @@ function addDays(dateStr, days) {
   return next.toISOString().slice(0, 10);
 }
 
-function pickFutureRecord(sorted, startIndex, targetDate, toleranceDays = 2) {
+function pickFutureRecord(sorted, startIndex, targetDate, toleranceDays = 2, asOfDate = null) {
   if (!targetDate) return null;
   const latestAllowed = addDays(targetDate, toleranceDays);
   for (let i = startIndex; i < sorted.length; i += 1) {
     const date = sorted[i]?.date;
     if (!date) continue;
+    if (asOfDate && date > asOfDate) return null;
     if (date < targetDate) continue;
     if (latestAllowed && date > latestAllowed) return null;
     return sorted[i];
@@ -49,6 +50,10 @@ export function computePredictionEvaluation(history = [], options = {}) {
   const sorted = [...(history || [])]
     .filter((item) => item && typeof item.date === "string")
     .sort((a, b) => a.date.localeCompare(b.date));
+  const asOfDate =
+    typeof options.asOfDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(options.asOfDate)
+      ? options.asOfDate
+      : sorted[sorted.length - 1]?.date || null;
 
   const rows = sorted.map((record, idx) => {
     const price = record?.input?.ethSpotPrice;
@@ -67,7 +72,12 @@ export function computePredictionEvaluation(history = [], options = {}) {
     };
     horizons.forEach((horizonDays) => {
       const target = addDays(record.date, horizonDays);
-      const future = pickFutureRecord(sorted, idx + 1, target, toleranceDays);
+      const blockedByAsOf = Boolean(
+        asOfDate && (record.date > asOfDate || (target && target > asOfDate))
+      );
+      const future = blockedByAsOf
+        ? null
+        : pickFutureRecord(sorted, idx + 1, target, toleranceDays, asOfDate);
       const futurePrice = future?.input?.ethSpotPrice;
       const returnPct =
         typeof price === "number" && typeof futurePrice === "number" && price !== 0
@@ -81,8 +91,9 @@ export function computePredictionEvaluation(history = [], options = {}) {
         futurePrice: typeof futurePrice === "number" ? futurePrice : null,
         returnPct,
         thresholdPct,
-        verdict: scored.verdict,
-        hit: scored.hit,
+        verdict: blockedByAsOf ? "pending" : scored.verdict,
+        hit: blockedByAsOf ? null : scored.hit,
+        blockedByAsOf,
       };
     });
     return row;
@@ -113,7 +124,73 @@ export function computePredictionEvaluation(history = [], options = {}) {
     };
   });
 
-  return { rows, summary };
+  return { rows, summary, asOfDate };
+}
+
+export function deriveDriftSignal(history = [], options = {}) {
+  const horizonDays = Number.isFinite(options.horizon) ? options.horizon : 7;
+  const horizonKey = String(horizonDays);
+  const lookback = Number.isFinite(options.lookback) ? options.lookback : 18;
+  const minSamples = Number.isFinite(options.minSamples) ? options.minSamples : 6;
+  const baseline = Number.isFinite(options.baseline) ? options.baseline : 0.55;
+  const warningGap = Number.isFinite(options.warningGap) ? options.warningGap : 0.08;
+  const dangerGap = Number.isFinite(options.dangerGap) ? options.dangerGap : 0.18;
+  const evaluation = computePredictionEvaluation(history, {
+    horizons: [horizonDays],
+    thresholds: options.thresholds,
+    toleranceDays: options.toleranceDays,
+    asOfDate: options.asOfDate,
+  });
+  const maturedRows = evaluation.rows.filter((row) => row.horizons[horizonKey]?.hit !== null);
+  const recentRows = maturedRows.slice(-lookback);
+  const sampleSize = recentRows.length;
+  if (sampleSize < minSamples) {
+    return {
+      level: "unknown",
+      label: "样本不足",
+      horizon: horizonDays,
+      accuracy: null,
+      baseline,
+      sampleSize,
+      betaMultiplier: 1,
+      note: `${horizonDays}D 样本不足（${sampleSize}/${minSamples}）`,
+    };
+  }
+  const hitCount = recentRows.reduce(
+    (acc, row) => acc + (row.horizons[horizonKey]?.hit ? 1 : 0),
+    0
+  );
+  const accuracy = hitCount / sampleSize;
+  const gap = baseline - accuracy;
+  let level = "ok";
+  let label = "稳定";
+  let betaMultiplier = 1;
+  if (gap >= dangerGap) {
+    level = "danger";
+    label = "高漂移";
+    betaMultiplier = 0.72;
+  } else if (gap >= warningGap) {
+    level = "warn";
+    label = "中漂移";
+    betaMultiplier = 0.86;
+  }
+  const pct = `${(accuracy * 100).toFixed(1)}%`;
+  const baselinePct = `${(baseline * 100).toFixed(1)}%`;
+  const note =
+    level === "ok"
+      ? `${horizonDays}D 命中率 ${pct}，在基线 ${baselinePct} 之上`
+      : `${horizonDays}D 命中率 ${pct}，低于基线 ${baselinePct}`;
+  return {
+    level,
+    label,
+    horizon: horizonDays,
+    accuracy,
+    baseline,
+    sampleSize,
+    hitCount,
+    betaMultiplier,
+    note,
+  };
 }
 
 function formatPct(value, digits = 1) {
@@ -136,8 +213,21 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
   if (!container) return;
   const horizons = [7, 14];
   const thresholds = { 7: 5, 14: 8 };
-  const evaluation = computePredictionEvaluation(history, { horizons, thresholds });
-  const quality = deriveQualityGate ? deriveQualityGate(focusRecord?.input || {}, meta) : null;
+  const asOfDate = focusRecord?.date || null;
+  const evaluation = computePredictionEvaluation(history, { horizons, thresholds, asOfDate });
+  const drift = deriveDriftSignal(history, {
+    horizon: 7,
+    asOfDate,
+    thresholds,
+    toleranceDays: 2,
+  });
+  const qualityMeta = {
+    ...meta,
+    driftLevel: meta.driftLevel || drift.level,
+    driftNote: meta.driftNote || drift.note,
+    executionLevel: meta.executionLevel || focusRecord?.output?.execution?.level || "ok",
+  };
+  const quality = deriveQualityGate ? deriveQualityGate(focusRecord?.input || {}, qualityMeta) : null;
 
   const qualityLabel = quality?.label || "--";
   const qualityReasons = quality?.reasons || [];
@@ -158,8 +248,19 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
       `;
     })
     .join("");
+  const driftText =
+    drift.accuracy === null
+      ? drift.note
+      : `${drift.note} · 样本 ${drift.hitCount}/${drift.sampleSize}`;
 
-  const recent = evaluation.rows.slice(-10).reverse();
+  const horizonKeys = horizons.map((days) => String(days));
+  const maturedRows = evaluation.rows.filter((row) =>
+    horizonKeys.some((key) => row.horizons[key]?.hit !== null)
+  );
+  const pendingRows = evaluation.rows.filter(
+    (row) => !horizonKeys.some((key) => row.horizons[key]?.hit !== null)
+  );
+  const recent = maturedRows.slice(-10).reverse();
   const tableRows = recent
     .map((row) => {
       const cell7 = row.horizons["7"] || {};
@@ -178,6 +279,15 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
       `;
     })
     .join("");
+  const pendingPreview = pendingRows
+    .slice(-6)
+    .reverse()
+    .map((row) => {
+      const target7 = row.horizons["7"]?.targetDate || "--";
+      const target14 = row.horizons["14"]?.targetDate || "--";
+      return `<li>${row.date}（7D→${target7} / 14D→${target14}）</li>`;
+    })
+    .join("");
 
   const footnote =
     qualityReasons.length
@@ -187,9 +297,19 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
   container.innerHTML = `
     <div class="eval-summary">
       <div class="eval-card">
-        <div class="k">发布门禁</div>
+        <div class="k">是否可执行</div>
         <div class="v">${qualityLabel}</div>
         <div class="s">${footnote}</div>
+      </div>
+      <div class="eval-card">
+        <div class="k">漂移监控</div>
+        <div class="v">${drift.label}</div>
+        <div class="s">${driftText}</div>
+      </div>
+      <div class="eval-card">
+        <div class="k">待验证样本</div>
+        <div class="v">${pendingRows.length}</div>
+        <div class="s">这些日期尚未到达 7D/14D 验证窗口</div>
       </div>
       ${cards}
     </div>
@@ -205,9 +325,16 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
         </tr>
       </thead>
       <tbody>
-        ${tableRows || ""}
+        ${
+          tableRows ||
+          '<tr><td colspan="6" class="eval-empty">暂无可验证样本（请等待后续日期自然成熟）</td></tr>'
+        }
       </tbody>
     </table>
-    <div class="eval-footnote">说明：A 预期上涨，C 预期下跌，B 预期区间；用 ETH 现货价格做事后验证。</div>
+    <div class="eval-pending">
+      <div class="eval-pending-title">待验证日期（不会参与当前命中率）</div>
+      <ul>${pendingPreview || "<li>无</li>"}</ul>
+    </div>
+    <div class="eval-footnote">说明：A 预期上涨，C 预期下跌，B 预期区间；用 ETH 现货价格做事后验证；as-of=${evaluation.asOfDate || "--"}。</div>
   `;
 }

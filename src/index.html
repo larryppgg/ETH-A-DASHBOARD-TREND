@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ETH-A Dashboard Trend</title>
-    <link rel="stylesheet" href="styles.css?v=20260210-2" />
+    <link rel="stylesheet" href="styles.css?v=20260212-1" />
   </head>
   <body>
     <div class="grid-sheen"></div>
@@ -45,7 +45,7 @@
         <button class="ghost nav-top" id="navTopBtn" type="button">回到顶部</button>
       </nav>
 
-      <section class="panel run-bar" id="runBar">
+      <section class="panel run-bar stage-marker stage-decision" id="runBar" data-layout-mode="decision">
         <div class="run-bar-header">
           <div>
             <div class="run-bar-title">运行状态</div>
@@ -53,7 +53,7 @@
           </div>
           <div class="run-bar-meta" id="runMetaLeft">
             <div class="run-meta">
-              <span>数据新鲜度（抓取）</span>
+              <span>抓取时间</span>
               <strong id="healthFreshness">--</strong>
             </div>
             <div class="run-meta">
@@ -69,12 +69,20 @@
               <strong id="healthAi">--</strong>
             </div>
             <div class="run-meta">
-              <span>数据时效（观测）</span>
+              <span>最新观测时间</span>
               <strong id="healthTimeliness">--</strong>
             </div>
             <div class="run-meta">
-              <span>发布门禁</span>
+              <span>是否可执行</span>
               <strong id="healthQuality">--</strong>
+            </div>
+            <div class="run-meta">
+              <span>模型稳定性</span>
+              <strong id="healthDrift">--</strong>
+            </div>
+            <div class="run-meta">
+              <span>交易摩擦</span>
+              <strong id="healthExecution">--</strong>
             </div>
             <div class="run-meta">
               <span>ETA</span>
@@ -137,7 +145,27 @@
         </div>
       </section>
 
-      <section class="panel timeline-panel" id="timelinePanel">
+      <section class="panel decision-panel stage-marker stage-decision" id="decisionPanel" data-layout-mode="decision">
+        <div class="panel-title">决策总览（先看）</div>
+        <div class="decision-grid">
+          <div class="decision-card">
+            <div class="decision-label">当前结论</div>
+            <div class="decision-value" id="decisionConclusion">--</div>
+            <div class="decision-sub" id="decisionWhy">--</div>
+          </div>
+          <div class="decision-card">
+            <div class="decision-label">是否可执行</div>
+            <div class="decision-value" id="decisionExecutable">--</div>
+            <div class="decision-sub">由可信度、时效、模型稳定性、交易摩擦共同决定</div>
+          </div>
+          <div class="decision-card">
+            <div class="decision-label">下一步看什么</div>
+            <div class="decision-sub" id="decisionNext">--</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel timeline-panel stage-marker stage-explain" id="timelinePanel" data-layout-mode="explain" data-mobile-collapsible="true">
         <div class="panel-title">时间轴总览</div>
         <div class="timeline-overview" id="timelineOverview"></div>
         <div class="timeline-tooltip" id="timelineTooltip">--</div>
@@ -146,7 +174,7 @@
           <input type="range" id="timelineRange" min="0" max="0" value="0" />
           <div class="timeline-meta">
             <div class="timeline-label" id="timelineLabel">--</div>
-            <button class="ghost" id="timelineLatestBtn">返回最新</button>
+            <button class="ghost" id="timelineLatestBtn">回到今天</button>
           </div>
         </div>
         <div class="history-track">
@@ -159,7 +187,7 @@
         </div>
       </section>
 
-      <section class="panel status-panel" id="statusPanel">
+      <section class="panel status-panel stage-marker stage-explain" id="statusPanel" data-layout-mode="explain" data-mobile-collapsible="true" data-mobile-label="状态看板">
         <div class="status-core">
           <div class="status-pill" id="statusBadge">B</div>
           <div>
@@ -197,7 +225,7 @@
         <div class="key-evidence" id="keyEvidence"></div>
       </section>
 
-      <section class="panel gate-audit-panel" id="gateAuditPanel">
+      <section class="panel gate-audit-panel stage-marker stage-audit" id="gateAuditPanel" data-layout-mode="audit" data-mobile-collapsible="true">
         <div class="panel-title">闸门链路 · 审计面板</div>
         <div class="gate-audit-grid">
           <div class="gate-chain" id="gateChain"></div>
@@ -205,7 +233,7 @@
         </div>
       </section>
 
-      <section class="panel action-panel" id="actionPanel">
+      <section class="panel action-panel stage-marker stage-decision" id="actionPanel" data-layout-mode="decision">
         <div class="panel-title">行动映射 · 风险与反证</div>
         <div class="action-block">
           <div class="action-label">建议动作</div>
@@ -230,7 +258,7 @@
         </div>
       </section>
 
-      <section class="panel kanban">
+      <section class="panel kanban stage-marker stage-audit" data-layout-mode="audit" data-mobile-collapsible="true">
         <div class="panel-title">状态看板</div>
         <div class="kanban-grid">
           <div class="kanban-col" data-state="A">
@@ -248,19 +276,19 @@
         </div>
       </section>
 
-      <section class="panel gateflow">
+      <section class="panel gateflow stage-marker stage-audit" data-layout-mode="audit" data-mobile-collapsible="true">
         <div class="panel-title">闸门链路 · 逐步可审计</div>
         <div class="gate-track" id="gateList"></div>
       </section>
 
-      <section class="panel inspector">
+      <section class="panel inspector stage-marker stage-audit" data-layout-mode="audit" data-mobile-collapsible="true">
         <div class="panel-title">审计面板</div>
         <div id="gateInspector" class="inspector-body">
           <div class="inspector-empty">点击任意闸门，查看输入、来源与计算过程。</div>
         </div>
       </section>
 
-      <section class="panel reasons" id="reasonsPanel">
+      <section class="panel reasons stage-marker stage-explain" id="reasonsPanel" data-layout-mode="explain">
         <div class="panel-title">证据摘要 · Top3 驱动</div>
         <ol id="topReasons" class="reason-list"></ol>
         <div class="panel-title">危险信号与结构注记</div>
@@ -269,13 +297,13 @@
         <div class="notes" id="evidenceHints">--</div>
       </section>
 
-      <section class="panel ai-panel" id="aiPanelSection">
+      <section class="panel ai-panel stage-marker stage-audit" id="aiPanelSection" data-layout-mode="audit" data-mobile-collapsible="true">
         <div class="panel-title">AI 解读</div>
-        <div class="ai-status" id="aiStatus">AI 离线解读待机</div>
+        <div class="ai-status" id="aiStatus">AI 未联机，已使用本地解读</div>
         <div id="aiPanel" class="ai-body"></div>
       </section>
 
-      <section class="panel trend" id="trendPanel">
+      <section class="panel trend stage-marker stage-explain" id="trendPanel" data-layout-mode="explain" data-mobile-collapsible="true">
         <div class="panel-title">历史趋势</div>
         <div class="trend-grid">
           <div class="trend-card">
@@ -296,12 +324,18 @@
         </div>
       </section>
 
-      <section class="panel eval-panel" id="evalPanelSection">
-        <div class="panel-title">预测评估 · 发布门禁</div>
+      <section class="panel eval-panel stage-marker stage-explain" id="evalPanelSection" data-layout-mode="explain" data-mobile-collapsible="true">
+        <div class="panel-title">预测评估 · 是否可执行</div>
+        <div class="eval-actions">
+          <button id="backfill90Btn" class="ghost" type="button">回测补齐 90 天</button>
+          <button id="backfill180Btn" class="ghost" type="button">回测补齐 180 天</button>
+          <button id="backfill365Btn" class="ghost" type="button">回测补齐 365 天</button>
+          <div id="evalBackfillStatus" class="eval-backfill-status">可选：先补齐历史样本，再看命中率。</div>
+        </div>
         <div id="evalPanel" class="eval-body"></div>
       </section>
 
-      <section class="panel data-panel" id="dataPanelSection">
+      <section class="panel data-panel stage-marker stage-data" id="dataPanelSection" data-layout-mode="data" data-mobile-collapsible="true">
         <div class="panel-title">数据台 · 自动抓取与输入</div>
         <div class="workflow">
           <div class="workflow-step">
@@ -374,6 +408,6 @@
         }
       })();
     </script>
-    <script type="module" src="app.js?v=20260210-2"></script>
+    <script type="module" src="app.js?v=20260212-1"></script>
   </body>
 </html>

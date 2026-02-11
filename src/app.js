@@ -18,12 +18,15 @@ import { buildTooltipText } from "./ui/formatters.js";
 import { buildCombinedInput } from "./ui/inputBuilder.js";
 import { createEtaTimer } from "./ui/etaTimer.js";
 import { fieldMeta } from "./ui/fieldMeta.js";
+import { deriveDriftSignal } from "./ui/eval.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
 const inputKey = "eth_a_dashboard_custom_input";
 const aiKey = "eth_a_dashboard_ai_cache_v1";
 const aiStatusKey = "eth_a_dashboard_ai_status_v1";
 const viewModeKey = "eth_a_dashboard_view_mode_v1";
+const EXECUTION_COST_BPS = 12;
+const historySeedPath = "/data/history.seed.json";
 
 const elements = {
   quickNav: document.getElementById("quickNav"),
@@ -80,6 +83,12 @@ const elements = {
   healthAi: document.getElementById("healthAi"),
   healthTimeliness: document.getElementById("healthTimeliness"),
   healthQuality: document.getElementById("healthQuality"),
+  healthDrift: document.getElementById("healthDrift"),
+  healthExecution: document.getElementById("healthExecution"),
+  decisionConclusion: document.getElementById("decisionConclusion"),
+  decisionExecutable: document.getElementById("decisionExecutable"),
+  decisionWhy: document.getElementById("decisionWhy"),
+  decisionNext: document.getElementById("decisionNext"),
   statusOverview: document.getElementById("statusOverview"),
   keyEvidence: document.getElementById("keyEvidence"),
   etaValue: document.getElementById("etaValue"),
@@ -113,6 +122,10 @@ const elements = {
   historyDate: document.getElementById("historyDate"),
   historyHint: document.getElementById("historyHint"),
   evalPanel: document.getElementById("evalPanel"),
+  backfill90Btn: document.getElementById("backfill90Btn"),
+  backfill180Btn: document.getElementById("backfill180Btn"),
+  backfill365Btn: document.getElementById("backfill365Btn"),
+  evalBackfillStatus: document.getElementById("evalBackfillStatus"),
   runAdvice: document.getElementById("runAdvice"),
   runAdviceBody: document.getElementById("runAdviceBody"),
   quickFetchBtn: document.getElementById("quickFetchBtn"),
@@ -331,6 +344,37 @@ function saveHistory(history) {
   cacheHistory(history);
 }
 
+function normalizeHistoryRecords(records) {
+  if (!Array.isArray(records)) return [];
+  return records
+    .filter((item) => item && typeof item.date === "string" && item.input && item.output)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function mergeHistoryRecords(seedRecords, localRecords) {
+  const merged = new Map();
+  normalizeHistoryRecords(seedRecords).forEach((item) => merged.set(item.date, item));
+  normalizeHistoryRecords(localRecords).forEach((item) => merged.set(item.date, item));
+  return Array.from(merged.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+async function loadSeedHistory() {
+  try {
+    const response = await fetch(`${historySeedPath}?ts=${Date.now()}`);
+    if (!response.ok) return [];
+    const payload = await response.json();
+    if (Array.isArray(payload)) {
+      return normalizeHistoryRecords(payload);
+    }
+    if (Array.isArray(payload?.history)) {
+      return normalizeHistoryRecords(payload.history);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 function loadCustomInput() {
   const raw = localStorage.getItem(inputKey);
   if (!raw) return null;
@@ -399,6 +443,151 @@ function aiCacheForDate(date) {
   return cached.date === date ? cached : null;
 }
 
+function escapeHtml(raw) {
+  return String(raw || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizeGateAiLabel(label = "") {
+  const key = String(label || "").trim();
+  if (key === "关键证据" || key === "依据") return "依据";
+  if (key === "执行限制") return "时效";
+  if (key === "下一步观察" || key === "下一次观察" || key === "观察") return "反证";
+  return key;
+}
+
+function summarizeGateEvidence(gate) {
+  const inputs = gate?.details?.inputs || {};
+  const entries = Object.entries(inputs).slice(0, 2);
+  if (!entries.length) return "当前无可用输入字段。";
+  return entries
+    .map(([key, value]) => `${humanizeFieldName(key)}=${formatFieldValue(value, fieldMeta[key]?.unit || "")}`)
+    .join("；");
+}
+
+function summarizeGateFreshness(gate) {
+  const timings = gate?.details?.timings || {};
+  const stale = [];
+  const aging = [];
+  Object.entries(timings).forEach(([key, timing]) => {
+    const level = timing?.freshness?.level;
+    if (level === "stale") stale.push(humanizeFieldName(key));
+    if (level === "aging") aging.push(humanizeFieldName(key));
+  });
+  if (stale.length) return `结论受限，过期字段：${stale.slice(0, 3).join("、")}`;
+  if (aging.length) return `时效通过但存在衰减字段：${aging.slice(0, 3).join("、")}`;
+  return "时效通过";
+}
+
+function buildGateFallbackText(gate) {
+  const note = String(gate?.note || "暂无结论").replace(/\s+/g, " ").trim();
+  const status = String(gate?.status || "").toLowerCase();
+  const rules = (gate?.details?.rules || [])
+    .slice(0, 2)
+    .map((item) => String(item || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("；");
+  const action =
+    status === "closed"
+      ? "先降仓并保留对冲，等该闸门转 OPEN 再恢复风险敞口。"
+      : status === "warn"
+      ? "降低杠杆并保持观察，反证出现前不追高。"
+      : "维持当前节奏，重点跟踪反证是否触发。";
+  return [
+    `【结论】：${note}`,
+    `【依据】：${summarizeGateEvidence(gate)}${rules ? `；规则：${rules}` : ""}`,
+    `【动作】：${action}`,
+    "【反证】：若关键输入方向反转并连续维持 2 个观测点，则重算该闸门。",
+    `【时效】：${summarizeGateFreshness(gate)}`,
+  ].join("\n");
+}
+
+function parseGateAiSections(text) {
+  const raw = String(text || "").replace(/\r/g, "").trim();
+  if (!raw) return null;
+  const pattern =
+    /(?:^|\n)\s*(?:[-*]\s*)?[【\[]?\s*(结论|关键证据|依据|动作|反证|时效|执行限制|下一步观察|下一次观察|观察)\s*[】\]]?\s*(?:[:：\-]\s*)?/g;
+  const points = [];
+  let match = pattern.exec(raw);
+  while (match) {
+    points.push({
+      start: match.index,
+      contentStart: pattern.lastIndex,
+      key: normalizeGateAiLabel(match[1]),
+    });
+    match = pattern.exec(raw);
+  }
+  if (!points.length) return null;
+  const order = ["结论", "依据", "动作", "反证", "时效"];
+  const map = {};
+  points.forEach((point, idx) => {
+    const end = idx + 1 < points.length ? points[idx + 1].start : raw.length;
+    const value = raw
+      .slice(point.contentStart, end)
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!value) return;
+    if (map[point.key]) {
+      map[point.key] += ` / ${value}`;
+    } else {
+      map[point.key] = value;
+    }
+  });
+  const hasStructured = order.some((key) => map[key]);
+  if (!hasStructured) return null;
+  return order.map((key) => ({ key, value: map[key] || "--" }));
+}
+
+function renderGateAiSectionsHtml(text) {
+  const sections = parseGateAiSections(text);
+  if (!sections) return null;
+  return sections
+    .map((section) => {
+      const cls = section.key === "结论" ? "gate-ai-row primary" : "gate-ai-row";
+      return `<div class="${cls}"><span class="gate-ai-k">${escapeHtml(section.key)}</span><span class="gate-ai-v">${escapeHtml(
+        section.value
+      )}</span></div>`;
+    })
+    .join("");
+}
+
+function updateAiBlock(node, text, status) {
+  if (!node) return;
+  const textNode = node.querySelector(".coverage-ai-text");
+  if (!textNode) return;
+  const resolvedText = text || "等待生成...";
+  node.setAttribute("data-state", status || "pending");
+  const hasAttr = (name) => typeof node.hasAttribute === "function" && node.hasAttribute(name);
+  const isGateNode = hasAttr("data-gate-ai") || hasAttr("data-gate-ai-inline");
+  const structuredHtml =
+    isGateNode && (status === "done" || status === "ok") ? renderGateAiSectionsHtml(resolvedText) : null;
+  if (structuredHtml) {
+    node.classList.add("ai-structured");
+    textNode.innerHTML = structuredHtml;
+  } else {
+    node.classList.remove("ai-structured");
+    textNode.textContent = resolvedText;
+  }
+  const toggle = node.querySelector(".coverage-ai-toggle");
+  if (!toggle) return;
+  if (structuredHtml) {
+    toggle.hidden = true;
+    node.classList.remove("expanded");
+    toggle.textContent = "展开";
+    return;
+  }
+  const canFold = resolvedText.length > 140;
+  toggle.hidden = !canFold;
+  if (!canFold) {
+    node.classList.remove("expanded");
+    toggle.textContent = "展开";
+  }
+}
+
 function applyCoverageFieldAi(aiPayload, date = selectedDate) {
   if (!elements.coverageList) return;
   const safePayload = aiPayload && (!date || !aiPayload.date || aiPayload.date === date) ? aiPayload : null;
@@ -408,30 +597,22 @@ function applyCoverageFieldAi(aiPayload, date = selectedDate) {
   nodes.forEach((node) => {
     const key = node.getAttribute("data-field-ai");
     const target = fieldMap.get(key);
-    const textNode = node.querySelector(".coverage-ai-text");
-    if (!textNode) return;
     if (!target) {
-      node.setAttribute("data-state", "pending");
-      textNode.textContent = "等待生成...";
+      updateAiBlock(node, "等待生成...", "pending");
       return;
     }
-    node.setAttribute("data-state", target.status || "pending");
-    textNode.textContent = target.text || "等待生成...";
+    updateAiBlock(node, target.text || "等待生成...", target.status || "pending");
   });
 
   const gateNodes = elements.coverageList.querySelectorAll("[data-gate-ai]");
   gateNodes.forEach((node) => {
     const gateId = node.getAttribute("data-gate-ai");
     const target = gateMap.get(gateId);
-    const textNode = node.querySelector(".coverage-ai-text");
-    if (!textNode) return;
     if (!target) {
-      node.setAttribute("data-state", "pending");
-      textNode.textContent = "等待生成...";
+      updateAiBlock(node, "等待生成...", "pending");
       return;
     }
-    node.setAttribute("data-state", target.status || "pending");
-    textNode.textContent = target.text || "等待生成...";
+    updateAiBlock(node, target.text || "等待生成...", target.status || "pending");
   });
 
   // Inline gate AI (audit/inspector) and inline field AI (key evidence chips).
@@ -439,14 +620,11 @@ function applyCoverageFieldAi(aiPayload, date = selectedDate) {
     if (!node || typeof node.getAttribute !== "function") return;
     const gateId = node.getAttribute("data-gate-ai-inline");
     const target = gateMap.get(gateId);
-    const textNode = node.querySelector(".coverage-ai-text");
     if (!target) {
-      node.setAttribute("data-state", "pending");
-      if (textNode) textNode.textContent = "等待生成...";
+      updateAiBlock(node, "等待生成...", "pending");
       return;
     }
-    node.setAttribute("data-state", target.status || "pending");
-    if (textNode) textNode.textContent = target.text || "等待生成...";
+    updateAiBlock(node, target.text || "等待生成...", target.status || "pending");
   });
 
   document.querySelectorAll("[data-field-ai-inline]").forEach((node) => {
@@ -477,7 +655,7 @@ function buildOfflineAiState(record, payload) {
     gates: (output.gates || []).map((gate) => ({
       id: gate.id,
       name: gate.name,
-      text: `${gate.note || "暂无"}；状态 ${String(gate.status || "--").toUpperCase()}`,
+      text: buildGateFallbackText(gate),
       status: "done",
     })),
     fields: (payload?.fields || []).map((field) => ({
@@ -627,7 +805,7 @@ async function runAi(record) {
             const target = aiState.gates.find((item) => item.id === gate.id);
             if (target) {
               const fallbackGate = (record.output.gates || []).find((item) => item.id === gate.id);
-              target.text = `${fallbackGate?.note || "暂无"}；状态 ${String(fallbackGate?.status || "--").toUpperCase()}`;
+              target.text = buildGateFallbackText(fallbackGate || { id: gate.id });
               target.status = "done";
             }
             errorCount += 1;
@@ -773,6 +951,30 @@ function previousDateKey(dateStr) {
   return date.toISOString().slice(0, 10);
 }
 
+function latestRecordBefore(history, date) {
+  if (!Array.isArray(history) || !history.length || !date) return null;
+  const candidates = history
+    .filter((item) => item?.date && item.date < date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return candidates[candidates.length - 1] || null;
+}
+
+function isoDaysAgo(offsetDays, baseDate = dateKey()) {
+  const date = new Date(`${baseDate}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return baseDate;
+  date.setUTCDate(date.getUTCDate() - offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function buildBackfillDates(maturedDays = 90, asOfDate = dateKey(), horizonDays = 14) {
+  const safeDays = Math.max(7, Number(maturedDays) || 90);
+  const dates = [];
+  for (let offset = safeDays + horizonDays; offset >= horizonDays; offset -= 1) {
+    dates.push(isoDaysAgo(offset, asOfDate));
+  }
+  return dates;
+}
+
 function normalizeInputForRun(input, history) {
   const output = { ...input };
   const prevDate = previousDateKey(output.date || dateKey());
@@ -815,6 +1017,11 @@ function showRunStatus(text) {
 function setRunAdvice(text) {
   if (!elements.runAdviceBody) return;
   elements.runAdviceBody.textContent = text || "";
+}
+
+function setEvalBackfillStatus(text) {
+  if (!elements.evalBackfillStatus) return;
+  elements.evalBackfillStatus.textContent = text || "";
 }
 
 const etaTimer = createEtaTimer();
@@ -928,6 +1135,65 @@ function setupCoverageControls() {
   }
 }
 
+function setupLayoutModeObserver() {
+  if (!document?.body?.dataset) return;
+  const sections = Array.from(document.querySelectorAll(".stage-marker[data-layout-mode]"));
+  if (!sections.length) return;
+  const setMode = (mode) => {
+    if (!mode) return;
+    document.body.dataset.layoutMode = mode;
+  };
+  setMode("decision");
+  const observer = new IntersectionObserver(
+    (entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => (b.intersectionRatio || 0) - (a.intersectionRatio || 0))[0];
+      if (!visible) return;
+      setMode(visible.target.getAttribute("data-layout-mode"));
+    },
+    { root: null, threshold: [0.2, 0.35, 0.5] }
+  );
+  sections.forEach((section) => observer.observe(section));
+}
+
+function setupMobileAccordions() {
+  const panels = Array.from(document.querySelectorAll('.panel[data-mobile-collapsible="true"]'));
+  if (!panels.length) return;
+  panels.forEach((panel) => {
+    if (!panel || typeof panel.querySelector !== "function" || typeof panel.prepend !== "function") return;
+    if (panel.querySelector(".panel-mobile-toggle")) return;
+    panel.classList.add("mobile-collapsible");
+    const titleNode = panel.querySelector(".panel-title");
+    const label =
+      (typeof panel.getAttribute === "function" && panel.getAttribute("data-mobile-label")) ||
+      titleNode?.textContent?.trim() ||
+      "模块";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "panel-mobile-toggle";
+    toggle.textContent = label;
+    toggle.setAttribute("aria-expanded", "true");
+    panel.prepend(toggle);
+    toggle.addEventListener("click", () => {
+      const collapsed = panel.classList.toggle("mobile-collapsed");
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
+  });
+}
+
+function setupAiFoldToggle() {
+  if (typeof document?.addEventListener !== "function") return;
+  document.addEventListener("click", (event) => {
+    const button = event.target?.closest?.(".coverage-ai-toggle");
+    if (!button) return;
+    const block = button.closest(".coverage-ai");
+    if (!block) return;
+    const expanded = block.classList.toggle("expanded");
+    button.textContent = expanded ? "收起" : "展开";
+  });
+}
+
 function setHistoryHint(text) {
   if (!elements.historyHint) return;
   elements.historyHint.textContent = text || "";
@@ -1025,6 +1291,17 @@ function formatRunTimestamp(value) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
+function latestFieldObservedAt(input) {
+  const map = input?.__fieldObservedAt || {};
+  let latest = null;
+  Object.values(map).forEach((value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return;
+    if (!latest || date.getTime() > latest.getTime()) latest = date;
+  });
+  return latest ? latest.toISOString() : null;
+}
+
 function setRunMeta(meta) {
   if (!meta) return;
   if (elements.runMetaId && meta.id) elements.runMetaId.textContent = meta.id;
@@ -1040,7 +1317,9 @@ function setRunMeta(meta) {
 function updateRunMetaFromRecord(record) {
   if (!record) return;
   const input = record.input || {};
+  const output = record.output || {};
   const generatedAt = input.__generatedAt || input.generatedAt;
+  const observedAt = latestFieldObservedAt(input);
   const proxyTrace = input.__proxyTrace || input.proxyTrace || [];
   let proxyText = "未知";
   if (proxyTrace.length) {
@@ -1063,8 +1342,21 @@ function updateRunMetaFromRecord(record) {
     trust = "WARN";
     trustLevel = "warn";
   }
+  if (output.modelRisk?.level === "danger" || output.execution?.level === "high") {
+    trust = "FAIL";
+    trustLevel = "danger";
+  } else if (
+    trust === "OK" &&
+    (output.modelRisk?.level === "warn" || output.execution?.level === "medium")
+  ) {
+    trust = "WARN";
+    trustLevel = "warn";
+  }
+  const dataTimeParts = [];
+  if (generatedAt) dataTimeParts.push(`抓取 ${formatRunTimestamp(generatedAt)}`);
+  if (observedAt) dataTimeParts.push(`观测最新 ${formatRunTimestamp(observedAt)}`);
   setRunMeta({
-    dataTime: generatedAt ? `抓取 ${formatRunTimestamp(generatedAt)}` : "--",
+    dataTime: dataTimeParts.length ? dataTimeParts.join(" · ") : "--",
     source: proxyText,
     trust,
     trustLevel,
@@ -1218,7 +1510,19 @@ async function runToday(options = {}) {
     setRunStage(elements.runStageCompute, "计算中");
     etaTimer.start("compute", Date.now());
     const input = { ...normalizedInput };
-    const output = runPipeline(input);
+    const driftSignal = deriveDriftSignal(history, {
+      horizon: 7,
+      asOfDate: targetDate,
+      minSamples: 6,
+      lookback: 18,
+    });
+    const prevRecord = latestRecordBefore(history, targetDate);
+    const output = runPipeline(input, {
+      asOfDate: targetDate,
+      drift: driftSignal,
+      previousBeta: prevRecord?.output?.beta,
+      costBps: EXECUTION_COST_BPS,
+    });
     etaTimer.end("compute", Date.now());
     updateEtaDisplay();
     const record = { date: targetDate, input, output };
@@ -1417,7 +1721,19 @@ async function selectHistoryDate(date) {
     etaTimer.start("compute", Date.now());
     setRunStage(elements.runStageValidate, "通过");
     setRunStage(elements.runStageCompute, "计算中");
-    const output = runPipeline(normalized);
+    const driftSignal = deriveDriftSignal(history, {
+      horizon: 7,
+      asOfDate: date,
+      minSamples: 6,
+      lookback: 18,
+    });
+    const prevRecord = latestRecordBefore(history, date);
+    const output = runPipeline(normalized, {
+      asOfDate: date,
+      drift: driftSignal,
+      previousBeta: prevRecord?.output?.beta,
+      costBps: EXECUTION_COST_BPS,
+    });
     etaTimer.end("compute", Date.now());
     updateEtaDisplay();
     const record = { date, input: normalized, output };
@@ -1435,6 +1751,85 @@ async function selectHistoryDate(date) {
   } finally {
     etaTimer.end("total", Date.now());
     updateEtaDisplay();
+  }
+}
+
+function setBackfillButtonsDisabled(disabled) {
+  [elements.backfill90Btn, elements.backfill180Btn, elements.backfill365Btn].forEach((button) => {
+    if (button) button.disabled = disabled;
+  });
+}
+
+async function backfillEvaluationHistory(maturedDays = 90) {
+  const asOfDate = dateKey();
+  const horizonDays = 14;
+  const dates = buildBackfillDates(maturedDays, asOfDate, horizonDays);
+  if (!dates.length) return;
+  setBackfillButtonsDisabled(true);
+  setEvalBackfillStatus(`准备回测补齐 ${maturedDays} 天样本...`);
+  showRunStatus("回测补齐中...");
+  let history = loadHistory();
+  let added = 0;
+  let skipped = 0;
+  let failed = 0;
+  const schemaKeys = Object.keys(inputSchema);
+  try {
+    for (let index = 0; index < dates.length; index += 1) {
+      const targetDate = dates[index];
+      setEvalBackfillStatus(`回填 ${index + 1}/${dates.length} · ${targetDate}`);
+      const existing = history.find((item) => item.date === targetDate);
+      if (existing) {
+        skipped += 1;
+        continue;
+      }
+      const payload = await fetchHistoryDate(targetDate);
+      if (!payload) {
+        failed += 1;
+        continue;
+      }
+      const combined = buildCombinedInput(payload, templateInput);
+      const normalized = normalizeInputForRun({ ...combined, date: targetDate }, history);
+      coerceInputTypes(normalized);
+      hydrateFieldFreshness(normalized, targetDate);
+      applyHalfLifeGate(normalized, schemaKeys, targetDate);
+      backfillMissingFromHistory(normalized, history, targetDate);
+      refreshMissingFields(normalized, schemaKeys);
+      const errors = validateInput(normalized);
+      if (errors.length) {
+        failed += 1;
+        continue;
+      }
+      const driftSignal = deriveDriftSignal(history, {
+        horizon: 7,
+        asOfDate: targetDate,
+        minSamples: 6,
+        lookback: 18,
+      });
+      const prevRecord = latestRecordBefore(history, targetDate);
+      const output = runPipeline(normalized, {
+        asOfDate: targetDate,
+        drift: driftSignal,
+        previousBeta: prevRecord?.output?.beta,
+        costBps: EXECUTION_COST_BPS,
+      });
+      const record = { date: targetDate, input: normalized, output };
+      history = history.filter((item) => item.date !== targetDate);
+      history.push(record);
+      added += 1;
+      if ((index + 1) % 5 === 0) {
+        saveHistory(history);
+      }
+    }
+    saveHistory(history);
+    renderSnapshot(history, selectedDate || timelineIndex.latestDate || asOfDate);
+    showRunStatus("完成");
+    setEvalBackfillStatus(
+      `回测补齐完成：新增 ${added}，已存在 ${skipped}，失败 ${failed}。说明：最近 ${horizonDays} 天因验证窗口未到仍会显示待验证。`
+    );
+  } catch (error) {
+    setEvalBackfillStatus(`回测补齐失败：${error.message || "未知错误"}`);
+  } finally {
+    setBackfillButtonsDisabled(false);
   }
 }
 
@@ -1513,6 +1908,9 @@ elements.quickRerunBtn?.addEventListener("click", () => {
   }
   runToday({ mode: "auto", forceRefresh: true });
 });
+elements.backfill90Btn?.addEventListener("click", () => backfillEvaluationHistory(90));
+elements.backfill180Btn?.addEventListener("click", () => backfillEvaluationHistory(180));
+elements.backfill365Btn?.addEventListener("click", () => backfillEvaluationHistory(365));
 if (elements.timelineRange) {
   elements.timelineRange.addEventListener("input", () => {
     const history = loadHistory();
@@ -1623,6 +2021,9 @@ window.__autoFetch__ = autoFetch;
 
 setupQuickNav();
 setupCoverageControls();
+setupLayoutModeObserver();
+setupMobileAccordions();
+setupAiFoldToggle();
 syncHistoryWindow();
 
 try {
@@ -1631,21 +2032,33 @@ try {
   applyViewMode("plain");
 }
 
-const history = loadHistory().length ? loadHistory() : (loadCachedHistory() || []);
-if (history.length) {
-  renderSnapshot(history, null);
-} else {
-  renderTimeline([], null);
-}
-
 syncControls();
 initWorkflow();
 renderAiPanel(elements.aiPanel, loadAiCache());
-renderAiStatus(elements.aiStatus, localStorage.getItem(aiStatusKey) || "AI 离线解读待机");
+renderAiStatus(elements.aiStatus, localStorage.getItem(aiStatusKey) || "AI 未联机，已使用本地解读");
 applyCoverageFieldAi(aiCacheForDate(selectedDate), selectedDate);
 
-if (shouldAutoRun(history, dateKey())) {
-  setTimeout(() => {
-    runToday({ mode: "auto" });
-  }, 300);
+async function bootstrapHistoryView() {
+  const local = normalizeHistoryRecords(loadHistory());
+  const cached = local.length ? [] : normalizeHistoryRecords(loadCachedHistory() || []);
+  const seed = await loadSeedHistory();
+  const history = mergeHistoryRecords(seed, local.length ? local : cached);
+
+  if (history.length) {
+    saveHistory(history);
+    renderSnapshot(history, null);
+    if (seed.length && elements.evalBackfillStatus) {
+      elements.evalBackfillStatus.textContent = `已加载历史样本 ${history.length} 条（含本地种子）`;
+    }
+  } else {
+    renderTimeline([], null);
+  }
+
+  if (shouldAutoRun(history, dateKey())) {
+    setTimeout(() => {
+      runToday({ mode: "auto" });
+    }, 300);
+  }
 }
+
+bootstrapHistoryView();

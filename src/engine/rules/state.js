@@ -26,6 +26,18 @@ export function applyStateCaps(state, macro) {
   return state;
 }
 
+export function applyDriftDegrade(state, driftLevel = "ok") {
+  if (driftLevel === "danger") {
+    if (state === "A") return "B";
+    if (state === "B") return "C";
+    return "C";
+  }
+  if (driftLevel === "warn" && state === "A") {
+    return "B";
+  }
+  return state;
+}
+
 export function computeBeta(state, penalties, betaCap) {
   const base = state === "A" ? 0.75 : state === "B" ? 0.45 : 0.2;
   let value = base;
