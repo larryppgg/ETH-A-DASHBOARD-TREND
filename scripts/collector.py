@@ -68,8 +68,9 @@ REQUIRED_FIELDS = [
 
 # Half-life governance (days). Stale threshold uses 2x half-life (aligns with frontend policy).
 HALF_LIFE_DAYS = {
-    "dxy5d": 3,
-    "dxy3dUp": 3,
+    # FRED 的 DXY 系列存在发布滞后（节假日/周末更明显）。半衰期取 5D，避免频繁误判为“过期”阻断运行。
+    "dxy5d": 5,
+    "dxy3dUp": 5,
     "us2yWeekBp": 3,
     "fciUpWeeks": 14,
     "etf1d": 2,
