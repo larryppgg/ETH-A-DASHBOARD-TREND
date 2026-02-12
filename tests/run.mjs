@@ -19,6 +19,7 @@ import { buildSeries, buildTimelineIndex, nearestDate } from "../src/ui/timeline
 import { cacheHistory, loadCachedHistory, resetCachedHistory } from "../src/ui/cache.js";
 import { buildDateWindow } from "../src/ui/historyWindow.js";
 import { formatUsd, buildTooltipText } from "../src/ui/formatters.js";
+import { deriveFieldTrend } from "../src/ui/fieldTrend.js";
 import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder.js";
 import { createEtaTimer } from "../src/ui/etaTimer.js";
 import { buildOverallPrompt } from "../src/ai/prompts.js";
@@ -340,6 +341,25 @@ function testBuildAiPayload() {
   assert(Array.isArray(payload.fields) && payload.fields.length > 20, "AI payload 应包含逐指标字段解读任务");
   assert(payload.fields.some((item) => item.key === "dxy5d"), "字段任务应包含 dxy5d");
   assert(payload.fields[0].prompt.includes("单一指标"), "字段提示词应是逐指标解释");
+  const dxyTask = payload.fields.find((item) => item.key === "dxy5d");
+  assert((dxyTask?.prompt || "").includes("字段趋势"), "字段提示词应包含趋势上下文");
+}
+
+function testFieldTrendDerivation() {
+  const history = [
+    { date: "2026-01-01", input: { etf10d: -400, dxy3dUp: false } },
+    { date: "2026-01-08", input: { etf10d: -250, dxy3dUp: false } },
+    { date: "2026-01-16", input: { etf10d: -150, dxy3dUp: true } },
+    { date: "2026-01-24", input: { etf10d: -90, dxy3dUp: true } },
+  ];
+  const numberTrend = deriveFieldTrend(history, "2026-01-24", "etf10d");
+  assert(numberTrend.kind === "number", "数值字段应产生数值趋势");
+  assert(numberTrend.direction === "up", "etf10d 从-400到-90应为上行趋势");
+  assert((numberTrend.text || "").includes("趋势"), "数值趋势应输出可读文案");
+
+  const boolTrend = deriveFieldTrend(history, "2026-01-24", "dxy3dUp");
+  assert(boolTrend.kind === "boolean", "布尔字段应产生布尔趋势");
+  assert((boolTrend.text || "").includes("趋势"), "布尔趋势应输出可读文案");
 }
 
 function testShouldAutoRun() {
@@ -1090,6 +1110,7 @@ async function run() {
   testRenderCoverageMissing();
   testRenderCoverageDerivedGroups();
   testBuildAiPayload();
+  testFieldTrendDerivation();
   testShouldAutoRun();
   testNeedsAutoFetch();
   testHalfLifePolicyAndBackfillCandidate();

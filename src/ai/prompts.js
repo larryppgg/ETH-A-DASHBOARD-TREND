@@ -100,6 +100,7 @@ export function buildFieldPrompt(field, context = {}) {
     `字段观测时间: ${field.observedAt || "未知"}\n` +
     `字段抓取时间: ${field.fetchedAt || "未知"}\n` +
     `字段新鲜度: ${field.freshnessLabel || "未知"}\n` +
+    `字段趋势: ${field.trend || "趋势样本不足"}\n` +
     `当前全局状态: ${JSON.stringify({
       state: output.state,
       beta: output.beta,

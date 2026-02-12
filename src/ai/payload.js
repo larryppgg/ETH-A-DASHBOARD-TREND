@@ -1,5 +1,6 @@
 import { buildSummaryPrompt, buildGatePrompt, buildOverallPrompt, buildFieldPrompt } from "./prompts.js";
 import { coverageGroups, fieldMeta } from "../ui/fieldMeta.js";
+import { deriveFieldTrend, summarizeTrendForPrompt } from "../ui/fieldTrend.js";
 
 function uniqueCoverageKeys() {
   const seen = new Set();
@@ -14,7 +15,7 @@ function uniqueCoverageKeys() {
   return list;
 }
 
-export function buildAiPayload(record) {
+export function buildAiPayload(record, history = []) {
   const output = record.output;
   const input = record.input;
   const keys = uniqueCoverageKeys().filter((key) => key in input);
@@ -40,6 +41,7 @@ export function buildAiPayload(record) {
       fetchedAt,
       freshnessLabel,
       value,
+      trend: summarizeTrendForPrompt(deriveFieldTrend(history, record.date, key)),
     };
     return {
       ...field,

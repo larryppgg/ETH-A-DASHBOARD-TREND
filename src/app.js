@@ -692,8 +692,8 @@ async function checkAiStatus() {
   }
 }
 
-async function runAi(record) {
-  const payload = buildAiPayload(record);
+async function runAi(record, history = []) {
+  const payload = buildAiPayload(record, history);
   const offline = buildOfflineAiState(record, payload);
   saveAiCache(offline);
   renderAiPanel(elements.aiPanel, offline);
@@ -1716,7 +1716,7 @@ async function runToday(options = {}) {
     setWorkflowStatus(elements.workflowReplay, "可回放");
     setRunStage(elements.runStageCompute, "完成");
     setRunStage(elements.runStageReplay, "可回放");
-    runAi(record)
+    runAi(record, updated)
       .catch(() => {})
       .finally(() => {
         etaTimer.end("ai", Date.now());
@@ -1924,7 +1924,7 @@ async function selectHistoryDate(date) {
     etaTimer.start("ai", Date.now());
     setRunStage(elements.runStageCompute, "完成");
     setRunStage(elements.runStageReplay, "可回放");
-    await runAi(record);
+    await runAi(record, updated);
     etaTimer.end("ai", Date.now());
     setHistoryHint("已抓取并写入历史");
   } finally {

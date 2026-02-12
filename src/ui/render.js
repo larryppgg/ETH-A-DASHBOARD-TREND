@@ -11,6 +11,7 @@ import {
 } from "./summary.js";
 import { classifyFieldFreshness } from "../inputPolicy.js";
 import { renderPredictionEvaluation } from "./eval.js";
+import { buildFieldTrendMap } from "./fieldTrend.js";
 
 const stateLabels = {
   A: "A / 进攻档",
@@ -75,6 +76,29 @@ function formatEvidenceValue(key, value) {
     return `${formatNumber(value, 3)}${unit ? ` ${unit}` : ""}`;
   }
   return String(value);
+}
+
+function renderMiniSparkline(values = []) {
+  const numeric = (values || []).map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (numeric.length < 2) return "";
+  const width = 120;
+  const height = 24;
+  const padding = 2;
+  const min = Math.min(...numeric);
+  const max = Math.max(...numeric);
+  const span = max - min || 1;
+  const points = numeric
+    .map((value, idx) => {
+      const x = padding + (idx / Math.max(numeric.length - 1, 1)) * (width - padding * 2);
+      const y = height - padding - ((value - min) / span) * (height - padding * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return `
+    <svg viewBox="0 0 ${width} ${height}" class="coverage-sparkline-svg" aria-hidden="true">
+      <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></polyline>
+    </svg>
+  `;
 }
 
 function buildKeyEvidence(output, input) {
@@ -634,7 +658,7 @@ function findGateForCoverage(output, groupId) {
   return (output?.gates || []).find((gate) => gate.id === gateId);
 }
 
-export function renderCoverage(container, input, output = null) {
+export function renderCoverage(container, input, output = null, history = [], currentDate = null) {
   if (!container) return;
   const sources = input.__sources || {};
   const fieldObservedAt = input.__fieldObservedAt || {};
@@ -644,6 +668,7 @@ export function renderCoverage(container, input, output = null) {
   const missing = new Set(input.__missing || []);
   const fallbackUpdatedAt = formatDataTime(input.__generatedAt || input.generatedAt);
   const keyEvidence = new Set();
+  const trendMap = buildFieldTrendMap(history, currentDate || input.date || input.__targetDate, Object.keys(fieldMeta));
   const reasonGateIds = (output?.reasonsTop3 || [])
     .map((item) => item.gateId)
     .filter(Boolean);
@@ -718,6 +743,8 @@ export function renderCoverage(container, input, output = null) {
           const freshnessLabel = freshness?.label || "未知";
           const freshnessClass = freshness?.level || "unknown";
           const gateTarget = normalizeGateIdForJump(meta.gate || "");
+          const trend = trendMap[key] || { text: "趋势样本不足", direction: "flat", series: [] };
+          const sparkline = renderMiniSparkline(trend.series);
           return `
             <div class="coverage-row ${isMissing ? "missing" : "ok"} ${freshnessClass} ${
               isKeyEvidence ? "key-evidence" : ""
@@ -733,7 +760,9 @@ export function renderCoverage(container, input, output = null) {
                 </div>
                 <div class="coverage-cell source">${source}</div>
                 <div class="coverage-cell status">
-                  ${isMissing ? "缺失" : "可用"} · ${freshnessLabel} · 观测 ${observedAt} · 抓取 ${fetchedAt}
+                  <div>${isMissing ? "缺失" : "可用"} · ${freshnessLabel} · 观测 ${observedAt} · 抓取 ${fetchedAt}</div>
+                  <div class="coverage-trend coverage-trend-${trend.direction || "flat"}">${trend.text || "趋势样本不足"}</div>
+                  ${sparkline ? `<div class="coverage-sparkline">${sparkline}</div>` : ""}
                   ${
                     gateTarget
                       ? `<button class="coverage-jump" type="button" data-gate-target="${gateTarget}">定位 ${gateTarget}</button>`
@@ -922,7 +951,7 @@ export function renderOutput(elements, record, history) {
     const hints = buildEvidenceHints(output);
     elements.evidenceHints.innerHTML = hints.map((item) => `<div>${item}</div>`).join("");
   }
-  renderCoverage(elements.coverageList, record.input, output);
+  renderCoverage(elements.coverageList, record.input, output, history, record.date);
   if (elements.coverageList) {
     elements.coverageList.querySelectorAll("[data-gate-target]").forEach((node) => {
       node.addEventListener("click", () => {

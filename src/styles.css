@@ -2009,7 +2009,42 @@ body[data-status-level="danger"] .run-bar {
   line-height: 1.45;
   font-family: "JetBrains Mono", monospace;
   display: grid;
-  gap: 8px;
+  gap: 6px;
+}
+
+.coverage-trend {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #89dcb0;
+}
+
+.coverage-trend-up {
+  color: #8be3ae;
+}
+
+.coverage-trend-down {
+  color: #f0a16f;
+}
+
+.coverage-trend-flat {
+  color: var(--muted);
+}
+
+.coverage-trend-flip {
+  color: #82c2ff;
+}
+
+.coverage-sparkline {
+  width: 120px;
+  height: 24px;
+  color: rgba(130, 194, 255, 0.92);
+  opacity: 0.92;
+}
+
+.coverage-sparkline-svg {
+  width: 120px;
+  height: 24px;
+  display: block;
 }
 
 .coverage-jump {
@@ -2488,6 +2523,10 @@ body[data-status-level="danger"] .run-bar {
   }
   .coverage-ai {
     grid-template-columns: 1fr;
+  }
+  .coverage-sparkline,
+  .coverage-sparkline-svg {
+    width: 100%;
   }
   .coverage-ai-toggle {
     justify-self: start;
