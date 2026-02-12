@@ -141,7 +141,7 @@ body {
 .mobile-fold > summary {
   list-style: none;
   cursor: pointer;
-  display: flex;
+  display: none;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
@@ -170,6 +170,10 @@ body {
   margin: 0;
   border-radius: 0;
   border: none;
+}
+
+.desktop-fold-title {
+  margin-top: 14px;
 }
 
 .last-run {
@@ -2405,7 +2409,12 @@ body[data-status-level="danger"] .run-bar {
   }
 
   .mobile-fold > summary {
+    display: flex;
     padding: 12px 12px;
+  }
+
+  .desktop-fold-title {
+    display: none;
   }
 
   /* Mobile IA: 决策 tab 里将 runBar 放到后面，避免首屏被状态占满。 */
