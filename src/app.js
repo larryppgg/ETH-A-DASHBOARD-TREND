@@ -970,10 +970,11 @@ function isoDaysAgo(offsetDays, baseDate = dateKey()) {
   return date.toISOString().slice(0, 10);
 }
 
-function buildBackfillDates(maturedDays = 90, asOfDate = dateKey(), horizonDays = 14) {
+function buildBackfillDates(maturedDays = 90, asOfDate = dateKey(), horizonDays = 14, stepDays = 1) {
   const safeDays = Math.max(7, Number(maturedDays) || 90);
+  const step = Math.max(1, Number(stepDays) || 1);
   const dates = [];
-  for (let offset = safeDays + horizonDays; offset >= horizonDays; offset -= 1) {
+  for (let offset = safeDays + horizonDays; offset >= horizonDays; offset -= step) {
     dates.push(isoDaysAgo(offset, asOfDate));
   }
   return dates;
@@ -1941,10 +1942,14 @@ function setBackfillButtonsDisabled(disabled) {
 async function backfillEvaluationHistory(maturedDays = 90) {
   const asOfDate = dateKey();
   const horizonDays = 14;
-  const dates = buildBackfillDates(maturedDays, asOfDate, horizonDays);
+  const targetSamples = 140;
+  const stepDays = Math.max(1, Math.ceil(maturedDays / targetSamples));
+  const dates = buildBackfillDates(maturedDays, asOfDate, horizonDays, stepDays);
   if (!dates.length) return;
   setBackfillButtonsDisabled(true);
-  setEvalBackfillStatus(`准备回测补齐 ${maturedDays} 天样本...`);
+  setEvalBackfillStatus(
+    `准备回测补齐 ${maturedDays} 天样本（步长 ${stepDays} 天，预计 ${dates.length} 条）...`
+  );
   showRunStatus("回测补齐中...");
   let history = loadHistory();
   let added = 0;

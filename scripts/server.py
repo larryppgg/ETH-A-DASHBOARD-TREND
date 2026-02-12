@@ -90,7 +90,9 @@ def call_doubao(prompt, model, api_key, proxies, system_prompt):
     return message.get("content") or ""
 
 
-def run_collector(target_date=None, timeout=240):
+# Historical backfills can be slow on first run (warm caches, big upstream payloads).
+# Keep this high enough so the frontend doesn't see flaky 502s during backtest fills.
+def run_collector(target_date=None, timeout=600):
     script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "collector.py"))
     with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as fp:
         output_path = fp.name

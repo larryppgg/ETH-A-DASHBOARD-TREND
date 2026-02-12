@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import hashlib
 import math
 import os
 import time
@@ -18,6 +19,10 @@ DOH_RESOLVERS = [
     ("cloudflare-dns.com", "1.1.1.1"),
 ]
 DNS_CACHE = {}
+
+CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".cache"))
+CACHE_TTL_SEC = int(os.environ.get("COLLECTOR_CACHE_TTL", "3600"))  # 1h default
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 REQUIRED_FIELDS = [
     "dxy5d",
@@ -112,6 +117,11 @@ AUTO_JSON_PATH = os.path.abspath(
 
 PROXY_CANDIDATES = ["direct"]
 
+# Bitfinex is used for historical market/ohlc data because CoinGecko public API limits
+# historical queries to ~365 days. Bitfinex candles support longer lookbacks without auth.
+BITFINEX_SYMBOL = "tETHUSD"
+ETH_SUPPLY_ESTIMATE = 120_000_000  # used to build a market-cap proxy for mcapElasticity
+
 
 def load_env(path):
     if not os.path.exists(path):
@@ -186,44 +196,100 @@ def probe_proxy(url="https://api.coingecko.com/api/v3/ping"):
     return trace
 
 
-def fetch_json(url):
+def _cache_path(url, suffix):
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:32]
+    return os.path.join(CACHE_DIR, f"{digest}.{suffix}")
+
+
+def _cache_read(url, suffix):
+    if (os.environ.get("COLLECTOR_NO_CACHE") or "").lower() in ("1", "true", "yes", "on"):
+        return None
+    path = _cache_path(url, suffix)
+    try:
+        st = os.stat(path)
+        if CACHE_TTL_SEC > 0 and (time.time() - st.st_mtime) > CACHE_TTL_SEC:
+            return None
+        with open(path, "r", encoding="utf-8") as fp:
+            return fp.read()
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _cache_write(url, suffix, text):
+    if (os.environ.get("COLLECTOR_NO_CACHE") or "").lower() in ("1", "true", "yes", "on"):
+        return
+    path = _cache_path(url, suffix)
+    try:
+        with open(path, "w", encoding="utf-8") as fp:
+            fp.write(text)
+    except Exception:
+        return
+
+
+def fetch_json(url, timeout=12):
+    cached = _cache_read(url, "json")
+    if cached:
+        try:
+            return json.loads(cached)
+        except json.JSONDecodeError:
+            pass
     for proxy in PROXY_CANDIDATES:
-        text = curl_fetch(url, proxy)
+        text = curl_fetch(url, proxy, timeout=timeout)
         if text:
             try:
-                return json.loads(text)
+                parsed = json.loads(text)
+                _cache_write(url, "json", text)
+                return parsed
             except json.JSONDecodeError:
                 continue
     return {}
 
 
-def fetch_text(url):
+def fetch_text(url, timeout=12):
+    cached = _cache_read(url, "txt")
+    if cached:
+        return cached
     for proxy in PROXY_CANDIDATES:
-        text = curl_fetch(url, proxy)
+        text = curl_fetch(url, proxy, timeout=timeout)
         if text:
+            _cache_write(url, "txt", text)
             return text
     return ""
 
 
-def curl_fetch(url, proxy=None, timeout=6):
-    cmd = ["curl", "-sSL", "--connect-timeout", str(timeout), "--max-time", str(timeout)]
+def curl_fetch(url, proxy=None, timeout=12):
     parsed = urlparse(url)
     host = parsed.hostname
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    resolve_args = []
     if host:
         ip = resolve_host(host)
         if ip:
-            cmd += ["--resolve", f"{host}:{port}:{ip}"]
-    if proxy and proxy.lower() != "direct":
-        cmd += ["--proxy", proxy]
-    cmd.append(url)
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
-    except Exception:
-        return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+            resolve_args = ["--resolve", f"{host}:{port}:{ip}"]
+
+    def run(extra_args):
+        cmd = ["curl", "-sSL", "--connect-timeout", str(timeout), "--max-time", str(timeout)]
+        cmd += extra_args
+        if proxy and proxy.lower() != "direct":
+            cmd += ["--proxy", proxy]
+        cmd.append(url)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        except Exception:
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
+
+    # Prefer system DNS first. If it fails (poisoned DNS / hijack), fall back to DoH-based resolve.
+    text = run([])
+    if text:
+        return text
+    if resolve_args:
+        return run(resolve_args)
+    return ""
 
 
 def resolve_host(host):
@@ -359,7 +425,7 @@ def backfill_from_previous(payload, previous, as_of_date=None):
     return filled
 
 
-def curl_probe(url, proxy=None, timeout=6):
+def curl_probe(url, proxy=None, timeout=12):
     cmd = ["curl", "-sSL", "--connect-timeout", str(timeout), "--max-time", str(timeout)]
     parsed = urlparse(url)
     host = parsed.hostname
@@ -407,6 +473,12 @@ def fred_series_csv(series_id, limit=10, target_date=None):
 
 
 def fred_series(series_id, limit=10, target_date=None):
+    # For large backfills, calling the JSON API with observation_end for every date creates
+    # a unique URL per day (no cache hits) and becomes unbearably slow. The fredgraph.csv
+    # endpoint returns the full series and can be cached once on disk, then filtered locally.
+    today = datetime.now(timezone.utc).date().isoformat()
+    if target_date and target_date != today:
+        return fred_series_csv(series_id, limit, target_date)
     url = (
         "https://api.stlouisfed.org/fred/series/observations"
         f"?series_id={series_id}&api_key={FRED_KEY}&file_type=json&sort_order=desc&limit={limit}"
@@ -635,7 +707,8 @@ def fetch_macro(target_date=None):
 
 
 def fetch_defillama(target_date=None):
-    data = fetch_json("https://stablecoins.llama.fi/stablecoincharts/all")
+    # This endpoint is relatively large (~1MB). Use a slightly higher timeout to avoid flakiness.
+    data = fetch_json("https://stablecoins.llama.fi/stablecoincharts/all", timeout=12)
     if not isinstance(data, list) or not data:
         return ({}, {}, ["stablecoin30d"])
     points = [
@@ -666,7 +739,8 @@ def fetch_defillama(target_date=None):
 
 
 def fetch_stablecoin_eth(target_date=None):
-    data = fetch_json("https://stablecoins.llama.fi/stablecoincharts/ethereum")
+    # This endpoint is relatively large. Use a slightly higher timeout to avoid flakiness.
+    data = fetch_json("https://stablecoins.llama.fi/stablecoincharts/ethereum", timeout=12)
     if not isinstance(data, list) or not data:
         return ({}, {}, ["mappingRatioDown"])
     points = [
@@ -865,24 +939,31 @@ def fetch_farside(target_date=None):
 
 
 def fetch_coingecko_market(target_date=None):
-    if target_date:
+    # CoinGecko public API has a ~365d historical window limit. Use the history endpoint only
+    # when requesting a real historical date (not "today").
+    if target_date and target_date != today_key():
         history_date = datetime.strptime(target_date, "%Y-%m-%d").strftime("%d-%m-%Y")
         url = f"https://api.coingecko.com/api/v3/coins/ethereum/history?date={history_date}"
         data = fetch_json(url)
+        if not isinstance(data, dict) or data.get("error") or not data.get("market_data"):
+            return ({}, {}, ["ethSpotPrice", "mcapGrowth", "mcapElasticity", "floatDensity"])
         market = data.get("market_data", {}) if isinstance(data, dict) else {}
-        eth_spot = (market.get("current_price") or {}).get("usd", 0)
-        market_cap = (market.get("market_cap") or {}).get("usd", 0)
-        volume_24h = (market.get("total_volume") or {}).get("usd", 0)
+        eth_spot = (market.get("current_price") or {}).get("usd", 0) or 0
+        market_cap = (market.get("market_cap") or {}).get("usd", 0) or 0
+        volume_24h = (market.get("total_volume") or {}).get("usd", 0) or 0
         circulating = market.get("circulating_supply") or 0
         total_supply = market.get("total_supply") or circulating or 1
         float_density = circulating / total_supply if total_supply else 1
-        chart = fetch_json(
-            "https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=365"
-        )
-        mcap_now, mcap_prev = chart_value_at_date(chart.get("market_caps"), target_date) if chart else (None, None)
-        mcap_change = percent_change(mcap_now, mcap_prev) / 100 if mcap_now and mcap_prev else 0
-        volume_now, _prev_vol = chart_value_at_date(chart.get("total_volumes"), target_date) if chart else (None, None)
-        volume_24h = volume_now or volume_24h
+        prev_iso = shift_date_iso(target_date, -1)
+        prev_mcap = None
+        if prev_iso:
+            prev_date = datetime.strptime(prev_iso, "%Y-%m-%d").strftime("%d-%m-%Y")
+            prev_data = fetch_json(
+                f"https://api.coingecko.com/api/v3/coins/ethereum/history?date={prev_date}"
+            )
+            if isinstance(prev_data, dict) and prev_data.get("market_data"):
+                prev_mcap = (prev_data.get("market_data", {}).get("market_cap") or {}).get("usd")
+        mcap_change = percent_change(market_cap, prev_mcap) / 100 if market_cap and prev_mcap else 0
         mcap_elasticity = market_cap / volume_24h if volume_24h else 0
         obs_stamp = f"{target_date}T00:00:00Z" if target_date else None
         return (
@@ -891,16 +972,12 @@ def fetch_coingecko_market(target_date=None):
                 "mcapGrowth": mcap_change,
                 "mcapElasticity": mcap_elasticity,
                 "floatDensity": float_density,
-                "trendMomentum": 0,
-                "divergence": 0,
             },
             {
                 "ethSpotPrice": "CoinGecko: history current_price.usd",
-                "mcapGrowth": "CoinGecko: market_chart (1d)",
+                "mcapGrowth": "CoinGecko: history market_cap 1d change",
                 "mcapElasticity": "CoinGecko: market_cap / volume",
                 "floatDensity": "CoinGecko: circulating / total_supply",
-                "trendMomentum": "CoinGecko: history (placeholder)",
-                "divergence": "CoinGecko: history (placeholder)",
             },
             [],
             {
@@ -909,8 +986,6 @@ def fetch_coingecko_market(target_date=None):
                     "mcapGrowth": obs_stamp,
                     "mcapElasticity": obs_stamp,
                     "floatDensity": obs_stamp,
-                    "trendMomentum": obs_stamp,
-                    "divergence": obs_stamp,
                 }
             },
         )
@@ -1038,6 +1113,185 @@ def fetch_defillama_cex(target_date=None):
     )
 
 
+def fetch_bitfinex_candles_window(end_date, days=60):
+    """Fetch daily candles ending at `end_date` (inclusive) from Bitfinex.
+
+    Returns points sorted by date desc. Each point: {date, open, high, low, close, volume}.
+    Bitfinex format: [MTS, OPEN, CLOSE, HIGH, LOW, VOLUME]
+    """
+    if not end_date:
+        end_date = today_key()
+    start_date = shift_date_iso(end_date, -(max(days, 2) - 1)) or end_date
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end_dt = (
+            datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            + timedelta(days=1)
+            - timedelta(milliseconds=1)
+        )
+    except Exception:
+        return []
+    start_ms = int(start_dt.timestamp() * 1000)
+    end_ms = int(end_dt.timestamp() * 1000)
+    url = (
+        f"https://api-pub.bitfinex.com/v2/candles/trade:1D:{BITFINEX_SYMBOL}/hist"
+        f"?start={start_ms}&end={end_ms}&limit=1000&sort=1"
+    )
+    raw = fetch_json(url)
+    if not isinstance(raw, list) or not raw:
+        return []
+    points = []
+    for item in raw:
+        try:
+            mts_ms = float(item[0])
+            date_key = date_key_from_ts(mts_ms / 1000)
+            if not date_key:
+                continue
+            points.append(
+                {
+                    "date": date_key,
+                    "open": float(item[1]),
+                    "high": float(item[3]),
+                    "low": float(item[4]),
+                    "close": float(item[2]),
+                    "volume": float(item[5]),
+                }
+            )
+        except Exception:
+            continue
+    points.sort(key=lambda item: item["date"], reverse=True)
+    return points
+
+
+def fetch_bitfinex_market(target_date=None):
+    series = fetch_bitfinex_candles_window(target_date or today_key(), days=9)
+    if not series:
+        return ({}, {}, ["ethSpotPrice", "mcapGrowth", "mcapElasticity", "floatDensity"])
+    idx = index_for_date(series, target_date) if target_date else 0
+    idx = min(idx, len(series) - 1)
+    latest = series[idx]
+    prev = series[idx + 1] if idx + 1 < len(series) else None
+    close = latest.get("close") or 0
+    prev_close = (prev or {}).get("close") or 0
+    price_change = (close - prev_close) / prev_close if prev_close else 0
+    volume_eth = latest.get("volume") or 0
+    volume_usd = volume_eth * close if close else 0
+    market_cap_proxy = close * ETH_SUPPLY_ESTIMATE
+    elasticity = market_cap_proxy / volume_usd if volume_usd else 0
+    obs_date = latest.get("date")
+    obs_stamp = f"{obs_date}T00:00:00Z" if obs_date else None
+    return (
+        {
+            "ethSpotPrice": close,
+            "mcapGrowth": price_change,
+            "mcapElasticity": elasticity,
+            "floatDensity": 1.0,
+        },
+        {
+            "ethSpotPrice": f"Bitfinex: {BITFINEX_SYMBOL} close",
+            "mcapGrowth": f"Bitfinex: {BITFINEX_SYMBOL} 1d close change (proxy)",
+            "mcapElasticity": "Bitfinex: marketcap proxy (supply*price)/volume_usd",
+            "floatDensity": "Assumed: ETH float density ~1",
+        },
+        [],
+        {
+            "observedAt": {
+                "ethSpotPrice": obs_stamp,
+                "mcapGrowth": obs_stamp,
+                "mcapElasticity": obs_stamp,
+                "floatDensity": obs_stamp,
+            }
+        },
+    )
+
+
+def fetch_bitfinex_ohlc(target_date=None):
+    series = fetch_bitfinex_candles_window(target_date or today_key(), days=60)
+    if not series:
+        return (
+            {},
+            {},
+            [
+                "crowdingIndex",
+                "longWicks",
+                "reverseFishing",
+                "shortFailure",
+                "volumeConfirm",
+                "trendMomentum",
+                "divergence",
+            ],
+        )
+    idx = index_for_date(series, target_date) if target_date else 0
+    idx = min(idx, len(series) - 1)
+    latest = series[idx]
+    volumes = [item.get("volume") or 0.0 for item in series]
+    closes = [item.get("close") or 0.0 for item in series]
+    prev_window = volumes[idx + 1 : idx + 8]
+    avg_volume = sum(prev_window) / max(len(prev_window), 1)
+
+    latest_open = latest.get("open") or 0.0
+    latest_close = latest.get("close") or 0.0
+    latest_high = latest.get("high") or 0.0
+    latest_low = latest.get("low") or 0.0
+    candle_span = max(latest_high - latest_low, 1e-9)
+    wick_ratio = (latest_high - max(latest_open, latest_close)) / candle_span
+
+    trend_momentum = (
+        (latest_close - (series[idx + 7].get("close") or 0.0)) / (series[idx + 7].get("close") or 1.0)
+        if idx + 7 < len(series) and (series[idx + 7].get("close") or 0) != 0
+        else 0
+    )
+    divergence = (
+        abs((latest_close - (series[idx + 1].get("close") or 0.0)) / (series[idx + 1].get("close") or 1.0))
+        if idx + 1 < len(series) and (series[idx + 1].get("close") or 0) != 0
+        else 0
+    )
+    crowding_index = min(100, 50 + abs(trend_momentum) * 500)
+    long_wicks = wick_ratio > 0.4
+    reverse_fishing = latest_close < latest_open and (volumes[idx] if idx < len(volumes) else 0) > avg_volume * 1.5
+    short_failure = latest_close > latest_open and (latest_close - latest_low) / candle_span > 0.6
+    volume_confirm = (volumes[idx] if idx < len(volumes) else 0) >= avg_volume * 1.2
+
+    close_window = closes[idx : idx + 30]
+    volume_window = volumes[idx : idx + 30]
+    obs_date = latest.get("date")
+    obs_stamp = f"{obs_date}T00:00:00Z" if obs_date else None
+    return (
+        {
+            "trendMomentum": trend_momentum,
+            "divergence": divergence,
+            "crowdingIndex": crowding_index,
+            "longWicks": long_wicks,
+            "reverseFishing": reverse_fishing,
+            "shortFailure": short_failure,
+            "volumeConfirm": volume_confirm,
+            "_closeSeries": close_window,
+            "_volumeSeries": volume_window,
+        },
+        {
+            "trendMomentum": f"Bitfinex: {BITFINEX_SYMBOL} candles (60d)",
+            "divergence": f"Bitfinex: {BITFINEX_SYMBOL} candles (60d)",
+            "crowdingIndex": f"Bitfinex: {BITFINEX_SYMBOL} candles (60d)",
+            "longWicks": f"Bitfinex: {BITFINEX_SYMBOL} candles (60d)",
+            "reverseFishing": f"Bitfinex: {BITFINEX_SYMBOL} candles (60d)",
+            "shortFailure": f"Bitfinex: {BITFINEX_SYMBOL} candles (60d)",
+            "volumeConfirm": f"Bitfinex: {BITFINEX_SYMBOL} candles (60d)",
+        },
+        [],
+        {
+            "observedAt": {
+                "trendMomentum": obs_stamp,
+                "divergence": obs_stamp,
+                "crowdingIndex": obs_stamp,
+                "longWicks": obs_stamp,
+                "reverseFishing": obs_stamp,
+                "shortFailure": obs_stamp,
+                "volumeConfirm": obs_stamp,
+            }
+        },
+    )
+
+
 def fetch_coingecko_ohlc(target_date=None):
     days = 365 if target_date else 30
     ohlc = fetch_json(
@@ -1161,22 +1415,72 @@ def fetch_eth_fees(target_date=None):
     data = fetch_json("https://api.llama.fi/summary/fees/ethereum")
     if not isinstance(data, dict) or not data:
         return ({}, {}, ["lstcScore", "netIssuanceHigh"])
-    total7d = float(data.get("total7d") or 0)
-    total30d = float(data.get("total30d") or 0)
+    chart = data.get("totalDataChart") or []
+    points = []
+    for item in chart:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+        # totalDataChart uses epoch seconds.
+        date_key = date_key_from_ts(item[0])
+        if not date_key:
+            continue
+        try:
+            points.append({"date": date_key, "value": float(item[1])})
+        except Exception:
+            continue
+    points.sort(key=lambda item: item["date"], reverse=True)
+    idx = index_for_date(points, target_date) if target_date else 0
+    idx = min(idx, max(len(points) - 1, 0)) if points else 0
+    window = points[idx : idx + 30]
+    total7d = sum(item.get("value") or 0 for item in window[:7])
+    total30d = sum(item.get("value") or 0 for item in window[:30])
+    obs_date = points[idx].get("date") if points and idx < len(points) else None
+    obs_stamp = f"{obs_date}T00:00:00Z" if obs_date else None
     return (
         {"fee7d": total7d, "fee30d": total30d},
         {"fee7d": "DefiLlama: fees/ethereum", "fee30d": "DefiLlama: fees/ethereum"},
         [],
+        {"observedAt": {"fee7d": obs_stamp, "fee30d": obs_stamp}},
     )
 
 
 def fetch_fear_greed(target_date=None):
-    data = fetch_json("https://api.alternative.me/fng/?limit=1&format=json")
+    # The API supports long histories (limit=0 returns max). Use it for historical runs so
+    # backfills beyond 365 days still get an as-of value.
+    today = datetime.now(timezone.utc).date().isoformat()
+    limit = 0 if target_date and target_date != today else 1
+    data = fetch_json(f"https://api.alternative.me/fng/?limit={limit}&format=json")
+    series = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(series, list) or not series:
+        return ({}, {}, ["sentimentThreshold"])
+
+    picked = None
+    picked_date = None
+    if target_date:
+        for item in series:
+            ts = item.get("timestamp")
+            date_key = date_key_from_ts(float(ts)) if ts else None
+            if date_key and date_key <= target_date:
+                picked = item
+                picked_date = date_key
+                break
+    if not picked:
+        picked = series[0]
+        ts = picked.get("timestamp")
+        picked_date = date_key_from_ts(float(ts)) if ts else None
+
     try:
-        value = float(data.get("data", [{}])[0].get("value"))
-        return ({"fearGreed": value}, {"fearGreed": "Alternative.me: FNG"}, [])
+        value = float(picked.get("value"))
     except Exception:
         return ({}, {}, ["sentimentThreshold"])
+
+    obs_stamp = f"{picked_date}T00:00:00Z" if picked_date else None
+    return (
+        {"fearGreed": value},
+        {"fearGreed": "Alternative.me: FNG"},
+        [],
+        {"observedAt": {"fearGreed": obs_stamp}},
+    )
 
 
 def fetch_distribution_gate(target_date=None):
@@ -1310,8 +1614,6 @@ def build_field_timestamps(data, sources, target_date, generated_at, observed_ov
     field_updated = {}
     fallback = generated_at
     overrides = observed_overrides or {}
-    if target_date:
-        fallback = f"{target_date}T00:00:00Z"
     for key in data.keys():
         source = (sources or {}).get(key, "")
         stamp = fallback
@@ -1407,11 +1709,29 @@ def main(argv=None):
     stable = safe_call("DefiLlama(stablecoin)", fetch_defillama, ["stablecoin30d"])
     stable_eth = safe_call("DefiLlama(stablecoin_eth)", fetch_stablecoin_eth, ["mappingRatioDown"])
     etf = safe_call("Farside(ETF)", fetch_farside, ["etf1d", "etf5d", "etf10d"])
-    market = safe_call(
-        "CoinGecko(market)",
-        fetch_coingecko_market,
-        ["mcapGrowth", "mcapElasticity", "floatDensity", "trendMomentum", "divergence"],
-    )
+    # CoinGecko historical access is limited for public API users; use Bitfinex for history runs.
+    if target_date and target_date != today_key():
+        market = safe_call(
+            "Bitfinex(market)",
+            fetch_bitfinex_market,
+            ["ethSpotPrice", "mcapGrowth", "mcapElasticity", "floatDensity"],
+        )
+        klines = safe_call(
+            "Bitfinex(OHLC)",
+            fetch_bitfinex_ohlc,
+            ["crowdingIndex", "longWicks", "reverseFishing", "shortFailure", "volumeConfirm", "trendMomentum", "divergence"],
+        )
+    else:
+        market = safe_call(
+            "CoinGecko(market)",
+            fetch_coingecko_market,
+            ["mcapGrowth", "mcapElasticity", "floatDensity", "trendMomentum", "divergence"],
+        )
+        klines = safe_call(
+            "CoinGecko(OHLC)",
+            fetch_coingecko_ohlc,
+            ["crowdingIndex", "longWicks", "reverseFishing", "shortFailure", "volumeConfirm"],
+        )
     liquidation = safe_call("Coinglass(liquidation)", fetch_coinglass_liquidations, ["liquidationUsd"])
     cex = safe_call("DefiLlama(CEX)", fetch_defillama_cex, ["exchBalanceTrend", "exchStableDelta"])
     if cex[2]:
@@ -1419,12 +1739,9 @@ def main(argv=None):
         if proxy[0]:
             errors.append("CEX: DefiLlama unavailable, fallback to exchange proxy")
             cex = proxy
-    klines = safe_call(
-        "CoinGecko(OHLC)",
-        fetch_coingecko_ohlc,
-        ["crowdingIndex", "longWicks", "reverseFishing", "shortFailure", "volumeConfirm"],
-    )
-    rwa = safe_call("DefiLlama(RWA)", fetch_rwa_protocols, ["rsdScore"])
+    historical_run = bool(target_date and target_date != today_key())
+    # RWA 协议列表（/protocols）体量巨大且不支持历史回溯；历史回测时不引入该维度，避免“用未来数据回填过去”。
+    rwa = ({}, {}, []) if historical_run else safe_call("DefiLlama(RWA)", fetch_rwa_protocols, ["rsdScore"])
     fees = safe_call("DefiLlama(Fees)", fetch_eth_fees, ["lstcScore", "netIssuanceHigh"])
     sentiment = safe_call("AltMe(FNG)", fetch_fear_greed, ["sentimentThreshold"])
     dist_gate = safe_call("GDELT(Distribution)", fetch_distribution_gate, ["distributionGateCount"])
@@ -1466,6 +1783,9 @@ def main(argv=None):
             "sentimentThreshold": "Alternative.me FNG",
         }
     )
+    fg_stamp = observed_overrides.get("fearGreed")
+    if fg_stamp:
+        observed_overrides["sentimentThreshold"] = fg_stamp
 
     if "totalStableNow" in data and "totalStableAgo" in data and "ethStableNow" in data and "ethStableAgo" in data:
         total_now = data["totalStableNow"] or 1
@@ -1481,7 +1801,9 @@ def main(argv=None):
         data.update({"rsdScore": rsd_score, "mappingRatioDown": mapping_ratio_down})
         sources.update(
             {
-                "rsdScore": "Derived: stablecoin share + RWA share (DefiLlama)",
+                "rsdScore": "Derived: stablecoin share (DefiLlama)"
+                if historical_run
+                else "Derived: stablecoin share + RWA share (DefiLlama)",
                 "mappingRatioDown": "Derived: ETH stablecoin share 30d",
             }
         )
@@ -1503,6 +1825,10 @@ def main(argv=None):
                 "netIssuanceHigh": "Derived: low fees imply high net issuance",
             }
         )
+        fee_stamp = observed_overrides.get("fee7d") or observed_overrides.get("fee30d")
+        if fee_stamp:
+            observed_overrides["lstcScore"] = fee_stamp
+            observed_overrides["netIssuanceHigh"] = fee_stamp
 
     if target_date and target_date != today_key():
         errors.append("历史日期回抓：部分来源仅支持最新数据，已使用最新值补齐。")
@@ -1543,10 +1869,11 @@ def main(argv=None):
                 stamp = (skeleton.get("fieldObservedAt") or {}).get(key)
                 if stamp:
                     observed_overrides[key] = stamp
-        data = skeleton.get("data") or data
-        sources = skeleton.get("sources") or sources
-        missing = skeleton.get("missing") or missing
-        errors = skeleton.get("errors") or errors
+        # Do not use `or` here: an empty list is a valid "no missing/errors" value.
+        data = skeleton.get("data") if skeleton.get("data") is not None else data
+        sources = skeleton.get("sources") if skeleton.get("sources") is not None else sources
+        missing = skeleton.get("missing") if skeleton.get("missing") is not None else missing
+        errors = skeleton.get("errors") if skeleton.get("errors") is not None else errors
 
     field_observed_at, field_fetched_at, field_updated_at = build_field_timestamps(
         data, sources, target_date, generated_at, observed_overrides
@@ -1560,7 +1887,9 @@ def main(argv=None):
         "fieldFetchedAt": field_fetched_at,
         "fieldUpdatedAt": field_updated_at,
         "missing": sorted(set(missing)),
-        "proxyTrace": probe_proxy(),
+        # Proxy probing is useful for "today" runs but extremely expensive during large
+        # historical backfills (multiplies network checks by N days).
+        "proxyTrace": probe_proxy() if not historical_run else [],
         "errors": errors,
     }
     with open(args.output_path, "w", encoding="utf-8") as f:
