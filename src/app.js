@@ -25,6 +25,7 @@ const inputKey = "eth_a_dashboard_custom_input";
 const aiKey = "eth_a_dashboard_ai_cache_v1";
 const aiStatusKey = "eth_a_dashboard_ai_status_v1";
 const viewModeKey = "eth_a_dashboard_view_mode_v1";
+const mobileTabKey = "eth_a_dashboard_mobile_tab_v1";
 const EXECUTION_COST_BPS = 12;
 const historySeedPath = "/data/history.seed.json";
 
@@ -134,6 +135,9 @@ const elements = {
   coverageSearch: document.getElementById("coverageSearch"),
   coverageFilter: document.getElementById("coverageFilter"),
   coverageClearBtn: document.getElementById("coverageClearBtn"),
+  mobileTabbar: document.getElementById("mobileTabbar"),
+  runFloatingBtn: document.getElementById("runFloatingBtn"),
+  runFloatingEta: document.getElementById("runFloatingEta"),
 };
 
 function cloneJson(value) {
@@ -1029,7 +1033,11 @@ const etaTimer = createEtaTimer();
 function updateEtaDisplay() {
   if (!elements.etaValue) return;
   const total = etaTimer.totalMs();
-  elements.etaValue.textContent = etaTimer.formatMs(total);
+  const text = etaTimer.formatMs(total);
+  elements.etaValue.textContent = text;
+  if (elements.runFloatingEta) {
+    elements.runFloatingEta.textContent = text;
+  }
 }
 
 let selectedDate = null;
@@ -1136,6 +1144,11 @@ function setupCoverageControls() {
 }
 
 function setupLayoutModeObserver() {
+  try {
+    if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+      if (window.matchMedia("(max-width: 720px)").matches) return;
+    }
+  } catch {}
   if (!document?.body?.dataset) return;
   const sections = Array.from(document.querySelectorAll(".stage-marker[data-layout-mode]"));
   if (!sections.length) return;
@@ -1155,6 +1168,171 @@ function setupLayoutModeObserver() {
     { root: null, threshold: [0.2, 0.35, 0.5] }
   );
   sections.forEach((section) => observer.observe(section));
+}
+
+function setupMobileTabs() {
+  const tabbar = elements.mobileTabbar;
+  if (!tabbar || typeof tabbar.querySelectorAll !== "function") return;
+  if (typeof window === "undefined") return;
+  if (typeof window.matchMedia !== "function") return;
+
+  const mm = window.matchMedia("(max-width: 720px)");
+  const buttons = Array.from(tabbar.querySelectorAll("[data-tab]"));
+  if (!buttons.length) return;
+
+  const sectionsByTab = {
+    decision: [
+      document.getElementById("decisionPanel"),
+      document.getElementById("actionPanel"),
+      document.getElementById("statusPanel"),
+      document.getElementById("runBar"),
+    ],
+    explain: [
+      document.getElementById("timelinePanel"),
+      document.getElementById("reasonsPanel"),
+      document.getElementById("aiPanelSection"),
+      document.getElementById("trendPanel"),
+      document.getElementById("evalPanelSection"),
+    ],
+    audit: [
+      document.getElementById("gateAuditPanel"),
+      document.querySelector(".kanban"),
+      document.querySelector(".gateflow"),
+      document.querySelector(".inspector"),
+    ],
+    data: [document.getElementById("dataPanelSection")],
+  };
+
+  const allSections = Array.from(
+    new Set(
+      Object.values(sectionsByTab)
+        .flat()
+        .filter(Boolean)
+    )
+  );
+
+  const clampTab = (tabId) => (tabId && tabId in sectionsByTab ? tabId : "decision");
+
+  const tabForHash = (hash) => {
+    if (!hash || typeof hash !== "string" || !hash.startsWith("#")) return null;
+    const id = hash.slice(1);
+    if (!id) return null;
+    for (const [tabId, nodes] of Object.entries(sectionsByTab)) {
+      if (nodes.some((node) => node && node.id === id)) return tabId;
+    }
+    return null;
+  };
+
+  const setActiveButtons = (tabId) => {
+    buttons.forEach((button) => {
+      const active = button.getAttribute("data-tab") === tabId;
+      button.setAttribute("aria-selected", active ? "true" : "false");
+      button.classList?.toggle?.("active", active);
+    });
+  };
+
+  let foldsInitialized = false;
+  const collapseHeavyFoldsOnce = () => {
+    if (foldsInitialized) return;
+    try {
+      document.querySelectorAll("details.mobile-fold").forEach((node) => node.removeAttribute("open"));
+    } catch {}
+    foldsInitialized = true;
+  };
+
+  const openHeavyFolds = () => {
+    try {
+      document.querySelectorAll("details.mobile-fold").forEach((node) => node.setAttribute("open", ""));
+    } catch {}
+  };
+
+  const selectTab = (tabId, options = {}) => {
+    const resolved = clampTab(tabId);
+    document.body.dataset.mobileTab = resolved;
+    document.body.dataset.layoutMode = resolved;
+    if (mm.matches) collapseHeavyFoldsOnce();
+
+    const visibleSet = new Set((sectionsByTab[resolved] || []).filter(Boolean));
+    allSections.forEach((node) => {
+      node.hidden = !visibleSet.has(node);
+    });
+    setActiveButtons(resolved);
+    try {
+      localStorage.setItem(mobileTabKey, resolved);
+    } catch {}
+
+    if (options.scrollToTop !== false) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  const resolveInitialTab = () => {
+    const hashTab = tabForHash(window.location.hash);
+    if (hashTab) return hashTab;
+    try {
+      const stored = localStorage.getItem(mobileTabKey);
+      if (stored) return clampTab(stored);
+    } catch {}
+    return "decision";
+  };
+
+  const enable = () => {
+    collapseHeavyFoldsOnce();
+    selectTab(resolveInitialTab(), { scrollToTop: false });
+  };
+
+  const disable = () => {
+    allSections.forEach((node) => {
+      node.hidden = false;
+    });
+    openHeavyFolds();
+    try {
+      delete document.body.dataset.mobileTab;
+      document.body.dataset.layoutMode = "decision";
+    } catch {}
+    setActiveButtons("decision");
+  };
+
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      selectTab(button.getAttribute("data-tab"));
+    });
+  });
+
+  if (elements.runFloatingBtn && elements.runBtn) {
+    elements.runFloatingBtn.addEventListener("click", () => {
+      elements.runBtn.click();
+    });
+  }
+
+  window.__ethSetMobileTab = (tabId, options) => {
+    if (!mm.matches) return;
+    selectTab(tabId, options);
+  };
+
+  const onChange = (event) => {
+    if (event.matches) enable();
+    else disable();
+  };
+  if (typeof mm.addEventListener === "function") {
+    mm.addEventListener("change", onChange);
+  } else if (typeof mm.addListener === "function") {
+    mm.addListener(onChange);
+  }
+
+  window.addEventListener("hashchange", () => {
+    if (!mm.matches) return;
+    const hash = window.location.hash;
+    const tabId = tabForHash(hash);
+    if (tabId) {
+      selectTab(tabId, { scrollToTop: false });
+      const target = document.querySelector(hash);
+      target?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    }
+  });
+
+  if (mm.matches) enable();
+  else disable();
 }
 
 function setupMobileAccordions() {
@@ -2021,6 +2199,7 @@ window.__autoFetch__ = autoFetch;
 
 setupQuickNav();
 setupCoverageControls();
+setupMobileTabs();
 setupLayoutModeObserver();
 setupMobileAccordions();
 setupAiFoldToggle();

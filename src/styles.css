@@ -126,6 +126,52 @@ body {
   box-shadow: 0 12px 30px rgba(224, 182, 91, 0.35);
 }
 
+.mobile-tabbar,
+.cta-floating {
+  display: none;
+}
+
+.mobile-fold {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.mobile-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(10, 12, 16, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mobile-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mobile-fold-title {
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.mobile-fold-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.mobile-fold > textarea.data-textarea {
+  margin: 0;
+  border-radius: 0;
+  border: none;
+}
+
 .last-run {
   font-size: 12px;
   color: var(--muted);
@@ -2243,17 +2289,137 @@ body[data-status-level="danger"] .run-bar {
     flex-direction: column;
     padding: 24px;
   }
+  .masthead h1 {
+    font-size: clamp(22px, 7vw, 30px);
+    line-height: 1.12;
+  }
+  .masthead p {
+    font-size: 13px;
+    line-height: 1.4;
+  }
   .quick-nav {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding: 8px 10px;
+    display: none;
   }
   .quick-nav .nav-top {
     margin-left: 0;
   }
   .shell {
     grid-template-columns: 1fr;
-    padding: 20px 20px 40px;
+    padding: 20px 20px calc(40px + 92px + env(safe-area-inset-bottom));
+  }
+
+  .mobile-tabbar {
+    display: flex;
+    position: fixed;
+    left: 14px;
+    right: 14px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    z-index: 30;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(10, 12, 16, 0.72);
+    backdrop-filter: blur(16px);
+  }
+
+  .mobile-tab {
+    flex: 1;
+    min-height: 44px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--muted);
+    font-size: 12px;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+
+  .mobile-tab[aria-selected="true"] {
+    border-color: rgba(224, 182, 91, 0.6);
+    color: var(--ink);
+    box-shadow: 0 0 0 1px rgba(224, 182, 91, 0.18) inset;
+  }
+
+  body[data-layout-mode="explain"] .mobile-tab[aria-selected="true"] {
+    border-color: rgba(96, 214, 194, 0.6);
+    box-shadow: 0 0 0 1px rgba(96, 214, 194, 0.16) inset;
+  }
+
+  body[data-layout-mode="audit"] .mobile-tab[aria-selected="true"] {
+    border-color: rgba(140, 180, 255, 0.6);
+    box-shadow: 0 0 0 1px rgba(140, 180, 255, 0.14) inset;
+  }
+
+  body[data-layout-mode="data"] .mobile-tab[aria-selected="true"] {
+    border-color: rgba(224, 182, 91, 0.55);
+    box-shadow: 0 0 0 1px rgba(224, 182, 91, 0.16) inset;
+  }
+
+  .cta-floating {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: fixed;
+    right: 16px;
+    bottom: calc(78px + env(safe-area-inset-bottom));
+    z-index: 31;
+    padding: 10px 14px;
+    border-radius: 999px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
+  }
+
+  .cta-floating-main {
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1px;
+  }
+
+  .cta-floating-sub {
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    opacity: 0.92;
+    white-space: nowrap;
+  }
+
+  .cta-floating-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.35);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.12);
+  }
+
+  body[data-status-level="ok"] .cta-floating-dot {
+    background: var(--ok);
+  }
+  body[data-status-level="warn"] .cta-floating-dot {
+    background: var(--warn);
+  }
+  body[data-status-level="danger"] .cta-floating-dot {
+    background: var(--danger);
+  }
+
+  .mobile-fold {
+    margin: 12px 0;
+  }
+
+  .mobile-fold > summary {
+    padding: 12px 12px;
+  }
+
+  /* Mobile IA: 决策 tab 里将 runBar 放到后面，避免首屏被状态占满。 */
+  #decisionPanel {
+    order: 1;
+  }
+  #actionPanel {
+    order: 2;
+  }
+  #statusPanel {
+    order: 3;
+  }
+  #runBar {
+    order: 4;
   }
   .panel-mobile-toggle {
     display: flex;

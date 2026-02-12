@@ -409,6 +409,9 @@ export function renderReasons(listContainer, notesContainer, reasons, notes, gat
     item.addEventListener("click", () => {
       const gate = gateMap.get(item.dataset.gateId);
       if (gate) {
+        if (typeof window !== "undefined") {
+          window.__ethSetMobileTab?.("audit");
+        }
         const gateNode = gateList.querySelector(`[data-gate-id="${item.dataset.gateId}"]`);
         gateNode?.scrollIntoView({ behavior: "smooth", block: "center" });
         renderInspector(inspector, gate);
@@ -926,6 +929,9 @@ export function renderOutput(elements, record, history) {
         const gateId = node.getAttribute("data-gate-target");
         const gate = (output.gates || []).find((item) => item.id === gateId);
         if (!gate) return;
+        if (typeof window !== "undefined") {
+          window.__ethSetMobileTab?.("audit");
+        }
         const gateNode = elements.gateList?.querySelector(`[data-gate-id="${gateId}"]`);
         gateNode?.scrollIntoView({ behavior: "smooth", block: "center" });
         if (gateNode) {
@@ -980,6 +986,11 @@ export function renderOutput(elements, record, history) {
     elements.keyEvidence.querySelectorAll("[data-scroll-to-field]").forEach((node) => {
       node.addEventListener("click", () => {
         const key = node.getAttribute("data-scroll-to-field");
+        if (typeof window !== "undefined") {
+          window.__ethSetMobileTab?.("data");
+        }
+        const fold = document.getElementById("coverageFold");
+        if (fold && "open" in fold) fold.open = true;
         const target = elements.coverageList?.querySelector(`[data-field-key=\"${key}\"]`);
         if (target) {
           target.scrollIntoView({ behavior: "smooth", block: "center" });

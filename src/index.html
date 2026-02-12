@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ETH-A Dashboard Trend</title>
-    <link rel="stylesheet" href="styles.css?v=20260212-1" />
+    <link rel="stylesheet" href="styles.css?v=20260212-2" />
   </head>
   <body>
     <div class="grid-sheen"></div>
@@ -373,27 +373,51 @@
           本区用于“抓取 + 校验 + 回填 + 导出”。系统默认自动抓取并优先使用本地历史补齐，
           同时对超半衰期字段执行拦截，避免过期数据污染判断。手动输入路径已默认关闭。
         </div>
-        <textarea id="inputJson" class="data-textarea" rows="12" spellcheck="false" readonly></textarea>
+        <details class="mobile-fold" id="rawJsonFold" open>
+          <summary>
+            <span class="mobile-fold-title">原始 JSON（只读）</span>
+            <span class="mobile-fold-meta">点击展开/收起</span>
+          </summary>
+          <textarea id="inputJson" class="data-textarea" rows="12" spellcheck="false" readonly></textarea>
+        </details>
         <div class="data-buttons">
           <button id="exportJsonBtn" class="ghost">导出 JSON</button>
           <button id="exportCsvBtn" class="ghost">导出 CSV</button>
         </div>
-        <div class="panel-title">数据覆盖矩阵</div>
-        <div class="coverage-controls">
-          <input id="coverageSearch" class="coverage-search" type="search" placeholder="搜索字段（如 dxy / ETF / 映射）" />
-          <select id="coverageFilter" class="coverage-filter" aria-label="覆盖矩阵过滤">
-            <option value="all">全部</option>
-            <option value="key">关键证据</option>
-            <option value="missing">缺失</option>
-            <option value="aging">衰减</option>
-            <option value="stale">过期</option>
-          </select>
-          <button id="coverageClearBtn" class="ghost" type="button">清除</button>
-        </div>
-        <div id="coverageList" class="coverage-grid"></div>
-        <div class="data-hint">点击闸门可追溯输入与规则命中。覆盖矩阵按闸门分组显示来源与用途。</div>
+        <details class="mobile-fold" id="coverageFold" open>
+          <summary>
+            <span class="mobile-fold-title">数据覆盖矩阵</span>
+            <span class="mobile-fold-meta">默认展开（移动端默认收起）</span>
+          </summary>
+          <div class="coverage-controls">
+            <input id="coverageSearch" class="coverage-search" type="search" placeholder="搜索字段（如 dxy / ETF / 映射）" />
+            <select id="coverageFilter" class="coverage-filter" aria-label="覆盖矩阵过滤">
+              <option value="all">全部</option>
+              <option value="key">关键证据</option>
+              <option value="missing">缺失</option>
+              <option value="aging">衰减</option>
+              <option value="stale">过期</option>
+            </select>
+            <button id="coverageClearBtn" class="ghost" type="button">清除</button>
+          </div>
+          <div id="coverageList" class="coverage-grid"></div>
+          <div class="data-hint">点击闸门可追溯输入与规则命中。覆盖矩阵按闸门分组显示来源与用途。</div>
+        </details>
       </section>
     </main>
+
+    <nav id="mobileTabbar" class="mobile-tabbar" role="tablist" aria-label="移动端分层导航">
+      <button class="mobile-tab" type="button" role="tab" data-tab="decision" aria-selected="true">决策</button>
+      <button class="mobile-tab" type="button" role="tab" data-tab="explain" aria-selected="false">解读</button>
+      <button class="mobile-tab" type="button" role="tab" data-tab="audit" aria-selected="false">审计</button>
+      <button class="mobile-tab" type="button" role="tab" data-tab="data" aria-selected="false">数据</button>
+    </nav>
+
+    <button id="runFloatingBtn" class="cta cta-floating" type="button" aria-label="今日运行（悬浮按钮）">
+      <span class="cta-floating-dot" aria-hidden="true"></span>
+      <span class="cta-floating-main">今日运行</span>
+      <span class="cta-floating-sub">ETA <span id="runFloatingEta">--</span></span>
+    </button>
 
     <footer class="footer">
       <div>ETH-A Dashboard Trend · 本地运行 / 自动抓取</div>
@@ -408,6 +432,6 @@
         }
       })();
     </script>
-    <script type="module" src="app.js?v=20260212-1"></script>
+    <script type="module" src="app.js?v=20260212-2"></script>
   </body>
 </html>
