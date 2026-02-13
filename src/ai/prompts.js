@@ -1,3 +1,6 @@
+// Bump when prompt semantics change so we can attribute performance changes over time.
+export const PROMPT_VERSION = "2026-02-13-1";
+
 export function buildSummaryPrompt(output, input) {
   return `你是资深交易研究员，请用“非术语、面向业务”的中文解释仪表盘结果，避免堆概念。\n\n` +
     `输出结果: ${JSON.stringify({

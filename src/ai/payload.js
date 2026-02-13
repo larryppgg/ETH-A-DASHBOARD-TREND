@@ -1,4 +1,4 @@
-import { buildSummaryPrompt, buildGatePrompt, buildOverallPrompt, buildFieldPrompt } from "./prompts.js";
+import { PROMPT_VERSION, buildSummaryPrompt, buildGatePrompt, buildOverallPrompt, buildFieldPrompt } from "./prompts.js";
 import { coverageGroups, fieldMeta } from "../ui/fieldMeta.js";
 import { deriveFieldTrend, summarizeTrendForPrompt } from "../ui/fieldTrend.js";
 
@@ -50,6 +50,7 @@ export function buildAiPayload(record, history = []) {
   });
   return {
     date: record.date,
+    promptVersion: PROMPT_VERSION,
     summary: {
       prompt: buildSummaryPrompt(output, input),
     },

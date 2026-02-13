@@ -22,9 +22,9 @@ import { formatUsd, buildTooltipText } from "../src/ui/formatters.js";
 import { deriveFieldTrend } from "../src/ui/fieldTrend.js";
 import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder.js";
 import { createEtaTimer } from "../src/ui/etaTimer.js";
-import { buildOverallPrompt } from "../src/ai/prompts.js";
+import { buildOverallPrompt, PROMPT_VERSION } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
-import { computePredictionEvaluation, deriveDriftSignal } from "../src/ui/eval.js";
+import { computePredictionEvaluation, deriveDriftSignal, renderPredictionEvaluation } from "../src/ui/eval.js";
 import { shouldAutoRun } from "../src/autoRun.js";
 import {
   needsAutoFetch,
@@ -336,6 +336,7 @@ function testBuildAiPayload() {
     output,
   };
   const payload = buildAiPayload(record);
+  assert(payload.promptVersion === PROMPT_VERSION, "AI payload 应携带 promptVersion，便于长期对账与迭代");
   assert(payload.summary.prompt.includes("仪表盘"), "AI 总结应生成提示词");
   assert(payload.gates.length === output.gates.length, "AI 闸门提示应与闸门数量一致");
   assert(Array.isArray(payload.fields) && payload.fields.length > 20, "AI payload 应包含逐指标字段解读任务");
@@ -567,6 +568,22 @@ function testAppAutoFetchEndpoint() {
   );
 }
 
+function testAppLoadsEthPriceSeed() {
+  const source = readFileSync(new URL("../src/app.js", import.meta.url), "utf-8");
+  assert(
+    source.includes("/data/eth.price.seed.json"),
+    "启动应加载 eth.price.seed.json 以减少评估 PENDING 并稳定漂移门"
+  );
+}
+
+function testAppLoadsPerfSummary() {
+  const source = readFileSync(new URL("../src/app.js", import.meta.url), "utf-8");
+  assert(
+    source.includes("/data/perf-summary"),
+    "启动应加载 perf-summary（run/perf_summary.json）用于展示每日性能摘要"
+  );
+}
+
 function testStyleTokens() {
   const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf-8");
   const tokens = [
@@ -781,6 +798,56 @@ function testDevScriptUsesServer() {
   assert(dev.includes("scripts/server.py"), "备用启动脚本应使用 server.py，保证 API 可用");
 }
 
+function testDailyAutorunUpdatesEthPriceSeed() {
+  const daily = readFileSync(new URL("../scripts/daily_autorun.mjs", import.meta.url), "utf-8");
+  assert(daily.includes("eth_price_seed.py"), "daily_autorun 应生成 eth.price.seed.json（价格种子）");
+  assert(daily.includes("eth.price.seed.json"), "daily_autorun 应写入 eth.price.seed.json 文件名");
+  assert(daily.includes("perf_summary.json"), "daily_autorun 应生成 run/perf_summary.json（性能摘要）");
+  assert(daily.includes("buildPerfSummary"), "daily_autorun 应复用 buildPerfSummary 生成性能摘要");
+  assert(daily.includes("iteration_report.mjs"), "daily_autorun 应生成每日迭代建议报告（iteration_report.mjs）");
+  assert(daily.includes("buildIterationReport"), "daily_autorun 应复用 buildIterationReport 生成迭代建议报告");
+}
+
+async function testPerfSummaryBuilder() {
+  const mod = await import("../scripts/perf_summary.mjs");
+  const buildPerfSummary = mod.buildPerfSummary;
+  assert(typeof buildPerfSummary === "function", "应暴露 buildPerfSummary(history, options) 构建性能摘要");
+
+  const history = [];
+  for (let day = 1; day <= 12; day += 1) {
+    const dd = String(day).padStart(2, "0");
+    history.push({ date: `2026-02-${dd}`, input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } });
+  }
+  const priceByDate = {
+    "2026-02-08": { close: 900, volume: 0 },
+    "2026-02-09": { close: 900, volume: 0 },
+    "2026-02-10": { close: 900, volume: 0 },
+    "2026-02-11": { close: 900, volume: 0 },
+    "2026-02-12": { close: 900, volume: 0 },
+  };
+  const summary = buildPerfSummary(history, { asOfDate: "2026-02-12", priceByDate });
+  assert(summary.asOfDate === "2026-02-12", "perf summary 应包含 asOfDate");
+  assert(summary.maturity?.matured >= 4, "perf summary 应包含成熟样本统计");
+  assert(summary.byHorizon?.["7"], "perf summary 应包含 7D 汇总");
+}
+
+async function testIterationReportBuilder() {
+  const mod = await import("../scripts/iteration_report.mjs");
+  const buildIterationReport = mod.buildIterationReport;
+  assert(typeof buildIterationReport === "function", "应暴露 buildIterationReport(perfSummary, options) 生成迭代建议报告");
+  const report = buildIterationReport(
+    {
+      asOfDate: "2026-02-12",
+      maturity: { total: 12, matured: 5, pending: 7, ratio: 0.41 },
+      byHorizon: { "7": { total: 5, hit: 0, accuracy: 0.0, thresholdPct: 5, byState: {} } },
+      drift: { "7": { level: "danger", note: "7D 命中率偏离", sampleSize: 5, accuracy: 0.0 } },
+      recent: [{ date: "2026-02-01", state: "A", expectation: "up", price: 1000, horizons: { "7": { verdict: "miss", returnPct: -10 } } }],
+    },
+    { promptVersion: "2026-02-13-1" }
+  );
+  assert(typeof report === "string" && report.includes("迭代建议"), "迭代报告应输出可读 Markdown 文本");
+}
+
 function testEtaTimerTotals() {
   const timer = createEtaTimer();
   timer.start("fetch", 0);
@@ -816,6 +883,27 @@ function testPredictionEvaluationAsOfGuard() {
   assert(row0208.horizons["7"].verdict === "pending", "targetDate 超过 asOf 时应保持 pending，避免时间穿越");
 }
 
+function testPredictionEvaluationUsesPriceSeed() {
+  const history = [
+    { date: "2026-02-01", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } },
+    // Intentionally omit the future snapshot record so we must rely on priceByDate.
+    { date: "2026-02-02", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } },
+  ];
+  const priceByDate = {
+    "2026-02-08": { close: 1100, volume: 123 },
+  };
+  const evaluation = computePredictionEvaluation(history, {
+    horizons: [7],
+    asOfDate: "2026-02-10",
+    priceByDate,
+  });
+  const row0201 = evaluation.rows.find((row) => row.date === "2026-02-01");
+  assert(row0201, "应找到 2026-02-01 行");
+  assert(row0201.horizons["7"].verdict === "hit", "提供价格种子时不应依赖未来快照，且应正确判定 HIT/MISS");
+  assert(row0201.horizons["7"].futurePrice === 1100, "价格种子应填充 futurePrice");
+  assert(row0201.horizons["7"].futureDate === "2026-02-08", "价格种子应填充 futureDate");
+}
+
 function testDeriveDriftSignal() {
   const history = [
     { date: "2026-01-01", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.65 } },
@@ -830,6 +918,133 @@ function testDeriveDriftSignal() {
   const drift = deriveDriftSignal(history, { horizon: 7, asOfDate: "2026-02-19", minSamples: 4 });
   assert(drift.level === "danger" || drift.level === "warn", "命中率显著下行时应触发漂移预警");
   assert(typeof drift.accuracy === "number", "漂移信号应返回可量化 accuracy");
+}
+
+function testDeriveDriftSignalUsesPriceSeed() {
+  const history = [];
+  for (let day = 1; day <= 12; day += 1) {
+    const dd = String(day).padStart(2, "0");
+    history.push({ date: `2026-02-${dd}`, input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } });
+  }
+  const priceByDate = {
+    "2026-02-08": { close: 900, volume: 0 },
+    "2026-02-09": { close: 900, volume: 0 },
+    "2026-02-10": { close: 900, volume: 0 },
+    "2026-02-11": { close: 900, volume: 0 },
+    "2026-02-12": { close: 900, volume: 0 },
+  };
+  const drift = deriveDriftSignal(history, { horizon: 7, asOfDate: "2026-02-12", minSamples: 4, priceByDate });
+  assert(drift.level !== "unknown", "提供价格种子时漂移门不应长期样本不足");
+  assert(drift.sampleSize >= 4, "提供价格种子后 sampleSize 应满足 minSamples");
+}
+
+function testRenderPredictionEvaluationUsesPriceSeed() {
+  const container = createNode();
+  const history = [
+    { date: "2026-02-01", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } },
+    { date: "2026-02-02", input: { ethSpotPrice: 1000 }, output: { state: "A", confidence: 0.7 } },
+    // Keep a later as-of focus record but omit its price to ensure we must use priceByDate.
+    { date: "2026-02-10", input: { ethSpotPrice: null }, output: { state: "B", confidence: 0.5 } },
+  ];
+  const focus = history[2];
+  const priceByDate = {
+    "2026-02-08": { close: 1100, volume: 0 },
+  };
+  renderPredictionEvaluation(container, history, focus, { priceByDate });
+  assert(
+    container.innerHTML.includes("eval-pill hit"),
+    "评估渲染应在历史稀疏时使用价格种子生成 HIT/MISS（而不是全 pending）"
+  );
+}
+
+function testRenderOutputPassesPriceSeedToEval() {
+  const kanbanCol = createNode("div");
+  global.document = {
+    body: { classList: { add() {}, remove() {} }, dataset: {} },
+    querySelectorAll() {
+      return [kanbanCol, kanbanCol, kanbanCol];
+    },
+    querySelector() {
+      return kanbanCol;
+    },
+    createElement(tag) {
+      return createNode(tag);
+    },
+    getElementById() {
+      return null;
+    },
+  };
+  const elements = {
+    statusBadge: createNode(),
+    statusTitle: createNode(),
+    statusSub: createNode(),
+    betaValue: createNode(),
+    hedgeValue: createNode(),
+    phaseValue: createNode(),
+    confidenceValue: createNode(),
+    extremeValue: createNode(),
+    distributionValue: createNode(),
+    lastRun: createNode(),
+    gateList: createNode(),
+    gateInspector: createNode(),
+    gateChain: createNode(),
+    auditVisual: createNode(),
+    topReasons: createNode(),
+    riskNotes: createNode(),
+    evidenceHints: createNode(),
+    betaChart: createNode(),
+    confidenceChart: createNode(),
+    fofChart: createNode(),
+    kanbanA: createNode(),
+    kanbanB: createNode(),
+    kanbanC: createNode(),
+    coverageList: createNode(),
+    statusOverview: createNode(),
+    timelineLabel: null,
+    timelineRange: null,
+    timelineOverview: null,
+    timelineLegend: null,
+    evalPanel: createNode(),
+    healthFreshness: createNode(),
+    healthMissing: createNode(),
+    healthProxy: createNode(),
+    healthAi: createNode(),
+    healthTimeliness: createNode(),
+    healthQuality: createNode(),
+    healthDrift: createNode(),
+    healthExecution: createNode(),
+    decisionConclusion: createNode(),
+    decisionExecutable: createNode(),
+    decisionWhy: createNode(),
+    decisionNext: createNode(),
+    runMetaTrust: createNode(),
+    runAdviceBody: createNode(),
+    actionSummary: createNode(),
+    actionDetail: createNode(),
+    actionAvoid: createNode(),
+    actionWatch: createNode(),
+    counterfactuals: createNode(),
+    missingImpact: createNode(),
+    workflowReplay: createNode(),
+    workflowRun: createNode(),
+    workflowValidate: createNode(),
+  };
+
+  const older = {
+    date: "2026-02-01",
+    input: { ...baseInput(), ethSpotPrice: 1000 },
+    output: { ...runPipeline(baseInput()), state: "A", reasonsTop3: [] },
+  };
+  const focus = {
+    date: "2026-02-10",
+    input: { ...baseInput(), ethSpotPrice: null },
+    output: { ...runPipeline(baseInput()), state: "B", reasonsTop3: [] },
+  };
+  renderOutput(elements, focus, [older, focus], { priceByDate: { "2026-02-08": { close: 1100, volume: 0 } } });
+  assert(
+    elements.evalPanel.innerHTML.includes("eval-pill hit"),
+    "renderOutput 应将 priceByDate 透传到评估渲染，避免历史稀疏导致全 pending"
+  );
 }
 
 function testPipelineAppliesDriftAndCostControls() {
@@ -1122,6 +1337,8 @@ async function run() {
   testCacheBustingAssets();
   testNoInlineRunOnclick();
   testAppAutoFetchEndpoint();
+  testAppLoadsEthPriceSeed();
+  testAppLoadsPerfSummary();
   testStyleTokens();
   testRenderOutputActionVariableNaming();
   testAppDoesNotImportRefreshMissingFields();
@@ -1142,10 +1359,17 @@ async function run() {
   testRefreshMissingFieldsOverridesStaleMissing();
   testGateChainHasNodes();
   testDevScriptUsesServer();
+  testDailyAutorunUpdatesEthPriceSeed();
+  await testPerfSummaryBuilder();
+  await testIterationReportBuilder();
   testEtaTimerTotals();
   testPredictionEvaluationBasic();
   testPredictionEvaluationAsOfGuard();
+  testPredictionEvaluationUsesPriceSeed();
   testDeriveDriftSignal();
+  testDeriveDriftSignalUsesPriceSeed();
+  testRenderPredictionEvaluationUsesPriceSeed();
+  testRenderOutputPassesPriceSeedToEval();
   testPipelineAppliesDriftAndCostControls();
   testEvalPanelRenders();
   await testRunTodayCompletesBeforeAi();

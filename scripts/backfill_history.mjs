@@ -72,7 +72,7 @@ function parseArgs(argv) {
     asOf: new Date().toISOString().slice(0, 10),
     output: DEFAULT_OUTPUT,
     statusOutput: DEFAULT_STATUS_OUTPUT,
-    timeoutSec: 300,
+    timeoutSec: 600,
     resume: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -89,7 +89,7 @@ function parseArgs(argv) {
   args.days = Number.isFinite(args.days) && args.days > 0 ? Math.floor(args.days) : 365;
   args.step = Number.isFinite(args.step) && args.step > 0 ? Math.floor(args.step) : 7;
   args.horizon = Number.isFinite(args.horizon) && args.horizon > 0 ? Math.floor(args.horizon) : 14;
-  args.timeoutSec = Number.isFinite(args.timeoutSec) && args.timeoutSec > 0 ? Math.floor(args.timeoutSec) : 300;
+  args.timeoutSec = Number.isFinite(args.timeoutSec) && args.timeoutSec > 0 ? Math.floor(args.timeoutSec) : 600;
   return args;
 }
 
@@ -268,26 +268,45 @@ function normalizeInputForRun(input, history, date) {
   return output;
 }
 
+function sleepMs(ms) {
+  if (!ms || ms <= 0) return;
+  const shared = new SharedArrayBuffer(4);
+  const view = new Int32Array(shared);
+  Atomics.wait(view, 0, 0, ms);
+}
+
 function runCollectorForDate(date, timeoutSec) {
-  const outputPath = path.join(os.tmpdir(), `eth-a-hist-${date}-${Date.now()}.json`);
-  const result = spawnSync(
-    "python3",
-    [COLLECTOR, "--date", date, "--output", outputPath],
-    {
-      cwd: ROOT,
-      encoding: "utf-8",
-      timeout: timeoutSec * 1000,
+  const retries = 2;
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const outputPath = path.join(os.tmpdir(), `eth-a-hist-${date}-${Date.now()}-${attempt}.json`);
+    try {
+      const result = spawnSync("python3", [COLLECTOR, "--date", date, "--output", outputPath], {
+        cwd: ROOT,
+        encoding: "utf-8",
+        timeout: timeoutSec * 1000,
+      });
+      if (result.error) {
+        throw result.error;
+      }
+      if (result.status !== 0) {
+        throw new Error((result.stderr || result.stdout || "collector failed").trim());
+      }
+      const payload = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
+      fs.unlinkSync(outputPath);
+      return payload;
+    } catch (error) {
+      lastError = error;
+      try {
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      } catch {}
+      if (attempt < retries) {
+        sleepMs(500 * (attempt + 1));
+        continue;
+      }
     }
-  );
-  if (result.error) {
-    throw result.error;
   }
-  if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || "collector failed").trim());
-  }
-  const payload = JSON.parse(fs.readFileSync(outputPath, "utf-8"));
-  fs.unlinkSync(outputPath);
-  return payload;
+  throw lastError || new Error("collector failed");
 }
 
 function readSeedHistory(filePath) {
@@ -330,8 +349,39 @@ function writeBackfillStatus(pathname, status) {
   writeJson(pathname, buildBackfillStatus(status));
 }
 
+function resolveSeedClose(priceByDate, dateKey) {
+  if (!priceByDate || !dateKey) return null;
+  const candidate = priceByDate[dateKey];
+  if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  const close = candidate?.close;
+  return typeof close === "number" && Number.isFinite(close) ? close : null;
+}
+
+function fillEthSpotPriceFromSeed(input, priceByDate, dateKey) {
+  if (!input || !priceByDate || !dateKey) return false;
+  const current = input.ethSpotPrice;
+  const usable = typeof current === "number" && Number.isFinite(current) && current > 0;
+  if (usable) return false;
+  const close = resolveSeedClose(priceByDate, dateKey);
+  if (close === null) return false;
+  input.ethSpotPrice = close;
+  input.__sources = input.__sources || {};
+  input.__fieldObservedAt = input.__fieldObservedAt || {};
+  input.__fieldFetchedAt = input.__fieldFetchedAt || {};
+  input.__fieldUpdatedAt = input.__fieldUpdatedAt || {};
+  input.__sources.ethSpotPrice = "Seed: eth.price.seed.json close";
+  input.__fieldObservedAt.ethSpotPrice = `${dateKey}T00:00:00Z`;
+  input.__fieldUpdatedAt.ethSpotPrice = `${dateKey}T00:00:00Z`;
+  // Fetch time is "now" but observation is historical close; keep fetchedAt as runtime.
+  input.__fieldFetchedAt.ethSpotPrice = new Date().toISOString();
+  return true;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  const priceSeedPath = path.join(ROOT, "src", "data", "eth.price.seed.json");
+  const priceSeed = readJson(priceSeedPath, null);
+  const priceByDate = priceSeed?.byDate && typeof priceSeed.byDate === "object" ? priceSeed.byDate : null;
   let lockFd = null;
   try {
     lockFd = acquireLock(LOCK_PATH);
@@ -413,13 +463,21 @@ function main() {
         const normalized = normalizeInputForRun({ ...(payload.data || {}) }, history, date);
         hydrateMetadata(normalized, payload);
         coerceInputTypes(normalized);
+        fillEthSpotPriceFromSeed(normalized, priceByDate, date);
         applyHalfLifeGate(normalized, Object.keys(inputSchema), date);
         backfillMissingFromHistory(normalized, history, date);
         refreshMissingFields(normalized);
         const errors = validateInput(normalized);
         if (errors.length) {
           failed += 1;
-          failedList.push({ date, error: `字段不完整: ${errors.slice(0, 4).join(" | ")}` });
+          const staleHints = (normalized.__errors || []).filter((item) => String(item).includes("半衰期拦截"));
+          failedList.push({
+            date,
+            stage: "validate",
+            kind: staleHints.length ? "half-life" : "missing",
+            missing: (normalized.__missing || []).slice(0, 12),
+            error: `字段不完整: ${errors.slice(0, 4).join(" | ")}`,
+          });
           console.log(`${progress} 失败（字段不完整: ${errors.slice(0, 4).join(" | ")}）`);
           continue;
         }
@@ -451,7 +509,7 @@ function main() {
         console.log(`${progress} 完成`);
       } catch (error) {
         failed += 1;
-        failedList.push({ date, error: error.message || "未知错误" });
+        failedList.push({ date, stage: "collector", kind: "upstream", error: error.message || "未知错误" });
         console.log(`${progress} 失败（${error.message || "未知错误"}）`);
       } finally {
         processed += 1;

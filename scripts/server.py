@@ -37,6 +37,7 @@ def should_disable_cache(path):
     return path.endswith((".js", ".css", ".json", ".mjs", ".html")) or path in (
         "/data/daily-status",
         "/data/backfill-status",
+        "/data/perf-summary",
     )
 
 
@@ -214,6 +215,21 @@ def load_backfill_status():
     }
 
 
+def load_perf_summary():
+    summary_path = os.path.join(RUN_ROOT, "perf_summary.json")
+    if not os.path.exists(summary_path):
+        return {"status": "missing", "asOfDate": None, "generatedAt": None}
+    try:
+        with open(summary_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        if isinstance(payload, dict):
+            payload.setdefault("status", "ok")
+            return payload
+    except Exception:
+        pass
+    return {"status": "fail", "asOfDate": None, "generatedAt": None}
+
+
 def node_binary():
     candidates = [
         which("node"),
@@ -346,6 +362,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if request_path == "/data/backfill-status":
             self._send_json(load_backfill_status())
+            return
+        if request_path == "/data/perf-summary":
+            self._send_json(load_perf_summary())
             return
         if request_path == "/ai/status":
             env = load_env(ENV_PATH)

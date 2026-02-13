@@ -32,6 +32,8 @@ const latestSeedPath = "/data/latest.seed.json";
 const aiSeedPath = "/data/ai.seed.json";
 const dailyStatusPath = "/data/daily-status";
 const backfillStatusPath = "/data/backfill-status";
+const perfSummaryPath = "/data/perf-summary";
+const ethPriceSeedPath = "/data/eth.price.seed.json";
 
 const elements = {
   quickNav: document.getElementById("quickNav"),
@@ -447,6 +449,56 @@ async function loadSeedAi() {
     return normalizeAiSeed(payload);
   } catch {
     return {};
+  }
+}
+
+function normalizeEthPriceSeed(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const byDate = payload.byDate && typeof payload.byDate === "object" ? payload.byDate : null;
+  if (!byDate) return null;
+  return {
+    generatedAt: payload.generatedAt || null,
+    asOfDate: payload.asOfDate || null,
+    byDate,
+    errors: Array.isArray(payload.errors) ? payload.errors : [],
+    source: payload.source || null,
+  };
+}
+
+async function loadEthPriceSeed() {
+  try {
+    const response = await fetch(`${ethPriceSeedPath}?ts=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return normalizeEthPriceSeed(payload);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePerfSummary(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const status = String(payload.status || "ok").toLowerCase();
+  return {
+    status,
+    generatedAt: payload.generatedAt || null,
+    asOfDate: payload.asOfDate || null,
+    maturity: payload.maturity || null,
+    byHorizon: payload.byHorizon || null,
+    drift: payload.drift || null,
+    recent: payload.recent || null,
+    runId: payload.runId || null,
+    promptVersion: payload.promptVersion || null,
+  };
+}
+
+async function loadPerfSummary() {
+  try {
+    const response = await fetch(`${perfSummaryPath}?ts=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    return normalizePerfSummary(await response.json());
+  } catch {
+    return null;
   }
 }
 
@@ -1189,6 +1241,8 @@ let selectedDate = null;
 let timelineIndex = buildTimelineIndex([]);
 let historyWindow = buildDateWindow(new Date(), 365);
 let aiSeedByDate = {};
+let ethPriceSeedByDate = null;
+let perfSummaryCache = null;
 let dailyStatusCache = null;
 let backfillPollTimer = null;
 
@@ -1579,7 +1633,7 @@ function renderSnapshot(history, date) {
   const resolvedDate = renderTimeline(history, date);
   const record = pickRecordByDate(history, resolvedDate);
   if (record) {
-    renderOutput(elements, record, history);
+    renderOutput(elements, record, history, { priceByDate: ethPriceSeedByDate, perfSummary: perfSummaryCache });
     applyCoverageFieldAi(aiCacheForDate(record.date), record.date);
     applyCoverageControls();
     updateRunMetaFromRecord(record);
@@ -1592,7 +1646,7 @@ function renderSnapshot(history, date) {
     syncHistorySelection(record.date);
   } else if (history.length) {
     const fallback = history[history.length - 1];
-    renderOutput(elements, fallback, history);
+    renderOutput(elements, fallback, history, { priceByDate: ethPriceSeedByDate, perfSummary: perfSummaryCache });
     applyCoverageFieldAi(aiCacheForDate(fallback.date), fallback.date);
     applyCoverageControls();
     syncHistorySelection(fallback.date);
@@ -2434,14 +2488,18 @@ async function bootstrapHistoryView() {
   const local = normalizeHistoryRecords(loadHistory());
   const cached = local.length ? [] : normalizeHistoryRecords(loadCachedHistory() || []);
   // Mobile users should see today's snapshot immediately; full history (27MB) can load later.
-  const [latestSeed, seedAi, dailyStatus, backfillStatus] = await Promise.all([
+  const [latestSeed, seedAi, dailyStatus, backfillStatus, ethPriceSeed, perfSummary] = await Promise.all([
     loadSeedLatest(),
     loadSeedAi(),
     loadDailyStatus(),
     loadBackfillStatus(),
+    loadEthPriceSeed(),
+    loadPerfSummary(),
   ]);
 
   aiSeedByDate = seedAi || {};
+  ethPriceSeedByDate = ethPriceSeed?.byDate || null;
+  perfSummaryCache = perfSummary || null;
   applyDailyStatusMeta(dailyStatus);
 
   if (backfillStatus) {

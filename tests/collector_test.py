@@ -178,6 +178,7 @@ class TestCollectorFetchJson(unittest.TestCase):
         self.assertTrue(server.should_disable_cache("/data/auto.json"), "json 应禁止缓存")
         self.assertTrue(server.should_disable_cache("/data/daily-status"), "daily-status 应禁止缓存")
         self.assertTrue(server.should_disable_cache("/data/backfill-status"), "backfill-status 应禁止缓存")
+        self.assertTrue(server.should_disable_cache("/data/perf-summary"), "perf-summary 应禁止缓存")
         self.assertTrue(server.should_disable_cache("/ui/render.js?v=1"), "带参数的 js 也应禁止缓存")
         self.assertFalse(server.should_disable_cache("/image.png"), "非文本资源可缓存")
 
@@ -192,6 +193,11 @@ class TestCollectorFetchJson(unittest.TestCase):
         with patch("os.path.exists", return_value=False):
             payload = server.load_backfill_status()
         self.assertEqual(payload.get("status"), "idle", "未初始化 backfill 应返回 idle")
+
+    def test_load_perf_summary_default(self):
+        with patch("os.path.exists", return_value=False):
+            payload = server.load_perf_summary()
+        self.assertEqual(payload.get("status"), "missing", "未初始化 perf_summary 应返回 missing")
 
     def test_payload_contains_field_updated_at(self):
         captured = {}
@@ -375,6 +381,38 @@ class TestCollectorFetchJson(unittest.TestCase):
         self.assertEqual(filled, [], "过期字段不应回填")
         self.assertIsNone(payload.get("data", {}).get("stablecoin30d"), "过期字段不应写入")
         self.assertIn("stablecoin30d", payload.get("missing", []), "过期字段仍应标记缺失")
+
+    def test_eth_price_seed_payload_shape(self):
+        import importlib
+
+        eth_seed = importlib.import_module("scripts.eth_price_seed")
+        payload = eth_seed.build_seed_payload(
+            as_of_date="2026-02-12",
+            bitfinex_points=[
+                {"date": "2026-02-12", "close": 100.0, "volume": 1.0},
+                {"date": "2026-02-11", "close": 99.0, "volume": 2.0},
+            ],
+            coingecko_by_date={"2026-02-12": 100.0, "2026-02-11": 99.0},
+            diff_threshold=0.015,
+        )
+        self.assertIn("generatedAt", payload, "应包含 generatedAt")
+        self.assertEqual(payload.get("asOfDate"), "2026-02-12", "应包含 asOfDate")
+        self.assertIn("series", payload, "应包含 series")
+        self.assertIn("byDate", payload, "应包含 byDate")
+        self.assertIsInstance(payload.get("errors"), list, "errors 应为 list")
+        self.assertIn("2026-02-12", payload.get("byDate", {}), "byDate 应包含日期键")
+
+    def test_eth_price_seed_records_diff_errors(self):
+        import importlib
+
+        eth_seed = importlib.import_module("scripts.eth_price_seed")
+        payload = eth_seed.build_seed_payload(
+            as_of_date="2026-02-12",
+            bitfinex_points=[{"date": "2026-02-12", "close": 100.0, "volume": 1.0}],
+            coingecko_by_date={"2026-02-12": 110.0},
+            diff_threshold=0.015,
+        )
+        self.assertTrue(payload.get("errors"), "差分超阈值应记录 errors")
 
 if __name__ == "__main__":
     unittest.main()

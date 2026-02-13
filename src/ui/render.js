@@ -808,7 +808,7 @@ export function renderCoverage(container, input, output = null, history = [], cu
     .join("");
 }
 
-export function renderOutput(elements, record, history) {
+export function renderOutput(elements, record, history, meta = {}) {
   const output = record.output;
   const state = output.state;
   document.body.classList.remove("state-A", "state-B", "state-C");
@@ -860,11 +860,13 @@ export function renderOutput(elements, record, history) {
     typeof localStorage !== "undefined" && typeof localStorage.getItem === "function"
       ? localStorage.getItem("eth_a_dashboard_ai_status_v1") || "AI 未联机，已使用本地解读"
       : "AI 未联机，已使用本地解读";
+  const extraMeta = meta && typeof meta === "object" ? meta : {};
   const qualityMeta = {
+    ...extraMeta,
     aiStatus,
-    driftLevel: output.modelRisk?.level || "ok",
-    driftNote: output.modelRisk?.note || "",
-    executionLevel: output.execution?.level || "ok",
+    driftLevel: output.modelRisk?.level || extraMeta.driftLevel || "ok",
+    driftNote: output.modelRisk?.note || extraMeta.driftNote || "",
+    executionLevel: output.execution?.level || extraMeta.executionLevel || "ok",
   };
   const health = buildHealthSummary(record.input, qualityMeta);
   if (typeof document !== "undefined" && document?.body?.dataset) {

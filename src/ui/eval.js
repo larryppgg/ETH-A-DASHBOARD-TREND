@@ -43,10 +43,38 @@ function scoreVerdict(expectation, returnPct, thresholdPct) {
   return { verdict: Math.abs(returnPct) <= thresholdPct ? "hit" : "miss", hit: Math.abs(returnPct) <= thresholdPct };
 }
 
+function resolveSeedClose(priceByDate, dateKey) {
+  if (!priceByDate || !dateKey) return null;
+  const candidate = priceByDate[dateKey];
+  if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  const close = candidate?.close;
+  return typeof close === "number" && Number.isFinite(close) ? close : null;
+}
+
+function pickFutureSeedPrice(priceByDate, targetDate, toleranceDays = 2, asOfDate = null) {
+  if (!priceByDate || !targetDate) return null;
+  const maxOffset = Number.isFinite(toleranceDays) ? Math.max(0, Math.floor(toleranceDays)) : 2;
+  for (let offset = 0; offset <= maxOffset; offset += 1) {
+    const forward = addDays(targetDate, offset);
+    if (forward && (!asOfDate || forward <= asOfDate)) {
+      const close = resolveSeedClose(priceByDate, forward);
+      if (close !== null) return { date: forward, close };
+    }
+    if (offset === 0) continue;
+    const backward = addDays(targetDate, -offset);
+    if (backward && (!asOfDate || backward <= asOfDate)) {
+      const close = resolveSeedClose(priceByDate, backward);
+      if (close !== null) return { date: backward, close };
+    }
+  }
+  return null;
+}
+
 export function computePredictionEvaluation(history = [], options = {}) {
   const horizons = Array.isArray(options.horizons) && options.horizons.length ? options.horizons : [7, 14];
   const thresholds = options.thresholds || { 7: 5, 14: 8 };
   const toleranceDays = Number.isFinite(options.toleranceDays) ? options.toleranceDays : 2;
+  const priceByDate = options.priceByDate && typeof options.priceByDate === "object" ? options.priceByDate : null;
   const sorted = [...(history || [])]
     .filter((item) => item && typeof item.date === "string")
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -56,7 +84,7 @@ export function computePredictionEvaluation(history = [], options = {}) {
       : sorted[sorted.length - 1]?.date || null;
 
   const rows = sorted.map((record, idx) => {
-    const price = record?.input?.ethSpotPrice;
+    const price = typeof record?.input?.ethSpotPrice === "number" ? record.input.ethSpotPrice : resolveSeedClose(priceByDate, record?.date);
     const state = record?.output?.state || "-";
     const confidence = record?.output?.confidence ?? null;
     const beta = record?.output?.beta ?? null;
@@ -78,17 +106,20 @@ export function computePredictionEvaluation(history = [], options = {}) {
       const future = blockedByAsOf
         ? null
         : pickFutureRecord(sorted, idx + 1, target, toleranceDays, asOfDate);
-      const futurePrice = future?.input?.ethSpotPrice;
+      const futurePriceFromRecord = typeof future?.input?.ethSpotPrice === "number" ? future.input.ethSpotPrice : null;
+      const seed = blockedByAsOf ? null : pickFutureSeedPrice(priceByDate, target, toleranceDays, asOfDate);
+      const resolvedFuturePrice = futurePriceFromRecord !== null ? futurePriceFromRecord : seed?.close ?? null;
+      const resolvedFutureDate = future?.date || seed?.date || null;
       const returnPct =
-        typeof price === "number" && typeof futurePrice === "number" && price !== 0
-          ? ((futurePrice / price) - 1) * 100
+        typeof price === "number" && typeof resolvedFuturePrice === "number" && price !== 0
+          ? ((resolvedFuturePrice / price) - 1) * 100
           : null;
       const thresholdPct = thresholds[horizonDays] ?? 5;
       const scored = scoreVerdict(expectation, returnPct, thresholdPct);
       row.horizons[String(horizonDays)] = {
         targetDate: target,
-        futureDate: future?.date || null,
-        futurePrice: typeof futurePrice === "number" ? futurePrice : null,
+        futureDate: resolvedFutureDate,
+        futurePrice: typeof resolvedFuturePrice === "number" ? resolvedFuturePrice : null,
         returnPct,
         thresholdPct,
         verdict: blockedByAsOf ? "pending" : scored.verdict,
@@ -140,6 +171,7 @@ export function deriveDriftSignal(history = [], options = {}) {
     thresholds: options.thresholds,
     toleranceDays: options.toleranceDays,
     asOfDate: options.asOfDate,
+    priceByDate: options.priceByDate,
   });
   const maturedRows = evaluation.rows.filter((row) => row.horizons[horizonKey]?.hit !== null);
   const recentRows = maturedRows.slice(-lookback);
@@ -203,6 +235,18 @@ function formatUsd(value) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 }
 
+function formatIsoShort(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mi = String(date.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+}
+
 function pillClass(verdict) {
   if (verdict === "hit") return "hit";
   if (verdict === "miss") return "miss";
@@ -214,12 +258,19 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
   const horizons = [7, 14];
   const thresholds = { 7: 5, 14: 8 };
   const asOfDate = focusRecord?.date || null;
-  const evaluation = computePredictionEvaluation(history, { horizons, thresholds, asOfDate });
+  const evaluation = computePredictionEvaluation(history, {
+    horizons,
+    thresholds,
+    asOfDate,
+    toleranceDays: 2,
+    priceByDate: meta.priceByDate || null,
+  });
   const drift = deriveDriftSignal(history, {
     horizon: 7,
     asOfDate,
     thresholds,
     toleranceDays: 2,
+    priceByDate: meta.priceByDate || null,
   });
   const qualityMeta = {
     ...meta,
@@ -291,12 +342,32 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
     })
     .join("");
 
+  const perf = meta?.perfSummary && typeof meta.perfSummary === "object" ? meta.perfSummary : null;
+  const perfH7 = perf?.byHorizon?.["7"] || null;
+  const perfH14 = perf?.byHorizon?.["14"] || null;
+  const perfDrift7 = perf?.drift?.["7"] || null;
+  const perfNote =
+    perf && perf.status && perf.status !== "missing" && perf.status !== "fail"
+      ? `
+      <div class="eval-pending eval-perf">
+        <div class="eval-pending-title">性能摘要（自动生成）</div>
+        <div class="eval-footnote">
+          as-of=${perf.asOfDate || "--"} · 生成 ${formatIsoShort(perf.generatedAt)} · prompt ${perf.promptVersion || "--"} · Run ${perf.runId || "--"}<br/>
+          成熟度 ${perf.maturity?.matured ?? "--"}/${perf.maturity?.total ?? "--"}（${typeof perf.maturity?.ratio === "number" ? (perf.maturity.ratio * 100).toFixed(1) + "%" : "--"}）<br/>
+          7D 命中率 ${typeof perfH7?.accuracy === "number" ? (perfH7.accuracy * 100).toFixed(1) + "%" : "--"} · 14D 命中率 ${typeof perfH14?.accuracy === "number" ? (perfH14.accuracy * 100).toFixed(1) + "%" : "--"}<br/>
+          漂移门 7D：${perfDrift7?.label || perfDrift7?.level || "--"} · ${perfDrift7?.note || "--"}
+        </div>
+      </div>
+    `
+      : "";
+
   const footnote =
     qualityReasons.length
       ? `门禁理由：${qualityReasons.join(" / ")}`
       : "门禁理由：门禁通过（可发布）";
 
   container.innerHTML = `
+    ${perfNote}
     <div class="eval-summary">
       <div class="eval-card">
         <div class="k">是否可执行</div>

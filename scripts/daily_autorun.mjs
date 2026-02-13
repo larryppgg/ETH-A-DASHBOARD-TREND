@@ -9,6 +9,8 @@ import { deriveDriftSignal } from "../src/ui/eval.js";
 import { applyHalfLifeGate, classifyFieldFreshness, pickHistoryBackfillCandidate } from "../src/inputPolicy.js";
 import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder.js";
 import { buildAiPayload } from "../src/ai/payload.js";
+import { buildPerfSummary } from "./perf_summary.mjs";
+import { buildIterationReport } from "./iteration_report.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -17,10 +19,14 @@ const DATA_DIR = path.join(ROOT, "src", "data");
 const HISTORY_PATH = path.join(DATA_DIR, "history.seed.json");
 const AUTO_PATH = path.join(DATA_DIR, "auto.json");
 const LATEST_PATH = path.join(DATA_DIR, "latest.seed.json");
+const ETH_PRICE_SEED_PATH = path.join(DATA_DIR, "eth.price.seed.json");
 const AI_SEED_PATH = path.join(DATA_DIR, "ai.seed.json");
+const PERF_SUMMARY_PATH = path.join(RUN_DIR, "perf_summary.json");
+const ITERATION_DIR = path.join(RUN_DIR, "iteration");
 const STATUS_PATH = path.join(RUN_DIR, "daily_status.json");
 const LOCK_PATH = path.join(RUN_DIR, "daily_autorun.lock");
 const COLLECTOR = path.join(ROOT, "scripts", "collector.py");
+const ETH_PRICE_SEED = path.join(ROOT, "scripts", "eth_price_seed.py");
 const ENV_PATH = path.join(ROOT, ".env");
 const EXECUTION_COST_BPS = 12;
 const DEFAULT_TIMEOUT_SEC = 600;
@@ -208,6 +214,19 @@ function runCollectorForDate(date, timeoutSec = DEFAULT_TIMEOUT_SEC) {
   } catch {}
   if (!payload) throw new Error("collector returned empty payload");
   return payload;
+}
+
+function runEthPriceSeed(asOfDate, timeoutSec = DEFAULT_TIMEOUT_SEC) {
+  const result = spawnSync(
+    "python3",
+    [ETH_PRICE_SEED, "--as-of", asOfDate, "--days", "365", "--output", ETH_PRICE_SEED_PATH],
+    { cwd: ROOT, encoding: "utf-8", timeout: timeoutSec * 1000 }
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || "eth price seed failed").trim());
+  }
+  return true;
 }
 
 function readHistorySeed(pathname) {
@@ -423,6 +442,7 @@ async function generateAiState(record, history, env) {
   const action = `${output.state || "-"} / beta ${output.beta ?? "--"} / beta_cap ${output.betaCap ?? "--"}`;
   const aiState = {
     date: payload.date,
+    promptVersion: payload.promptVersion || null,
     summary: `本地离线解读：当前状态 ${output.state || "-"}，核心驱动为 ${reasons}。`,
     summaryStatus: "done",
     overall: `本地离线总结：建议动作 ${action}；主要风险 ${risks}。`,
@@ -665,6 +685,15 @@ async function main() {
       ...record,
     });
 
+    status.phase = "price-seed";
+    writeStatus(status);
+    try {
+      runEthPriceSeed(args.date, args.timeoutSec);
+    } catch (error) {
+      status.errors.push(`eth price seed: ${error?.message || "failed"}`);
+      writeStatus(status);
+    }
+
     status.phase = "ai";
     writeStatus(status);
     const { aiState, warnings } = await generateAiState(record, mergedHistory, env);
@@ -674,6 +703,36 @@ async function main() {
     aiSeed.byDate = aiSeed.byDate || {};
     aiSeed.byDate[args.date] = aiState;
     writeJson(AI_SEED_PATH, aiSeed);
+
+    let perfSummary = null;
+    status.phase = "perf";
+    writeStatus(status);
+    try {
+      const priceSeed = readJson(ETH_PRICE_SEED_PATH, null);
+      perfSummary = buildPerfSummary(mergedHistory, {
+        asOfDate: args.date,
+        priceByDate: priceSeed?.byDate || null,
+      });
+      perfSummary.runId = status.runId || null;
+      perfSummary.promptVersion = aiState?.promptVersion || null;
+      writeJson(PERF_SUMMARY_PATH, perfSummary);
+    } catch (error) {
+      status.errors.push(`perf summary: ${error?.message || "failed"}`);
+      writeStatus(status);
+    }
+
+    status.phase = "iteration";
+    writeStatus(status);
+    try {
+      const summary = perfSummary || readJson(PERF_SUMMARY_PATH, null) || { asOfDate: args.date };
+      fs.mkdirSync(ITERATION_DIR, { recursive: true });
+      const report = buildIterationReport(summary, { promptVersion: summary.promptVersion || null });
+      const reportPath = path.join(ITERATION_DIR, `${args.date}.md`);
+      fs.writeFileSync(reportPath, report, "utf-8");
+    } catch (error) {
+      status.errors.push(`iteration report: ${error?.message || "failed"}`);
+      writeStatus(status);
+    }
 
     status.status = warnings.length ? "warn" : "ok";
     status.errors.push(...warnings);
