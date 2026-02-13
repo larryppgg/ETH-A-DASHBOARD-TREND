@@ -16,6 +16,7 @@ const RUN_DIR = path.join(ROOT, "run");
 const DATA_DIR = path.join(ROOT, "src", "data");
 const HISTORY_PATH = path.join(DATA_DIR, "history.seed.json");
 const AUTO_PATH = path.join(DATA_DIR, "auto.json");
+const LATEST_PATH = path.join(DATA_DIR, "latest.seed.json");
 const AI_SEED_PATH = path.join(DATA_DIR, "ai.seed.json");
 const STATUS_PATH = path.join(RUN_DIR, "daily_status.json");
 const LOCK_PATH = path.join(RUN_DIR, "daily_autorun.lock");
@@ -547,6 +548,8 @@ function writeStatus(status) {
 
 function buildRecordFromCollectorPayload(payload, date, history) {
   const combined = buildCombinedInput(payload, templateInput);
+  // Preserve proxy trace so the UI can display "代理/网络" on precomputed records.
+  combined.__proxyTrace = payload?.proxyTrace || payload?.proxy_trace || null;
   combined.date = date;
   coerceInputTypes(combined);
   applyHalfLifeGate(combined, Object.keys(inputSchema), date);
@@ -656,6 +659,11 @@ async function main() {
     if (!nextEnvelope.step) nextEnvelope.step = 1;
     nextEnvelope.history = mergedHistory;
     writeJson(HISTORY_PATH, nextEnvelope);
+    // Small latest snapshot for fast mobile boot (avoid downloading/parsing full 27MB history).
+    writeJson(LATEST_PATH, {
+      generatedAt: new Date().toISOString(),
+      ...record,
+    });
 
     status.phase = "ai";
     writeStatus(status);

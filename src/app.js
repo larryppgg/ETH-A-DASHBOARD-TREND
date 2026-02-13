@@ -28,6 +28,7 @@ const viewModeKey = "eth_a_dashboard_view_mode_v1";
 const mobileTabKey = "eth_a_dashboard_mobile_tab_v1";
 const EXECUTION_COST_BPS = 12;
 const historySeedPath = "/data/history.seed.json";
+const latestSeedPath = "/data/latest.seed.json";
 const aiSeedPath = "/data/ai.seed.json";
 const dailyStatusPath = "/data/daily-status";
 const backfillStatusPath = "/data/backfill-status";
@@ -400,6 +401,26 @@ async function loadSeedHistory() {
     return [];
   } catch {
     return [];
+  }
+}
+
+function normalizeSeedRecord(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const candidate = payload.record && typeof payload.record === "object" ? payload.record : payload;
+  const date = candidate?.date;
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (!candidate.input || !candidate.output) return null;
+  return { date, input: candidate.input, output: candidate.output };
+}
+
+async function loadSeedLatest() {
+  try {
+    const response = await fetch(`${latestSeedPath}?ts=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return normalizeSeedRecord(payload);
+  } catch {
+    return null;
   }
 }
 
@@ -2412,26 +2433,35 @@ applyDailyStatusMeta(null);
 async function bootstrapHistoryView() {
   const local = normalizeHistoryRecords(loadHistory());
   const cached = local.length ? [] : normalizeHistoryRecords(loadCachedHistory() || []);
-  const [seed, seedAi, dailyStatus, backfillStatus] = await Promise.all([
-    loadSeedHistory(),
+  // Mobile users should see today's snapshot immediately; full history (27MB) can load later.
+  const [latestSeed, seedAi, dailyStatus, backfillStatus] = await Promise.all([
+    loadSeedLatest(),
     loadSeedAi(),
     loadDailyStatus(),
     loadBackfillStatus(),
   ]);
+
   aiSeedByDate = seedAi || {};
   applyDailyStatusMeta(dailyStatus);
+
   if (backfillStatus) {
     setEvalBackfillStatus(formatBackfillStatusText(backfillStatus));
     if (backfillStatus.status === "running") {
       setBackfillButtonsDisabled(true);
       pollBackfillStatusUntilDone().catch(() => {});
     }
+  } else if (elements.evalBackfillStatus) {
+    elements.evalBackfillStatus.textContent = "历史样本加载中...";
   }
-  const history = mergeHistoryRecords(seed, local.length ? local : cached);
+
+  let history = local.length ? local : cached;
+  if (latestSeed) {
+    history = mergeHistoryRecords([latestSeed], history);
+  }
 
   if (history.length) {
     saveHistory(history);
-    renderSnapshot(history, null);
+    renderSnapshot(history, latestSeed?.date || null);
     const latest = history[history.length - 1];
     const seededAi = latest?.date ? aiSeedByDate?.[latest.date] : null;
     if (seededAi) {
@@ -2440,8 +2470,22 @@ async function bootstrapHistoryView() {
       applyCoverageFieldAi(seededAi, latest.date);
       setAiStatus("AI 已预生成（日任务）");
     }
-    if (seed.length && elements.evalBackfillStatus) {
-      elements.evalBackfillStatus.textContent = `已加载历史样本 ${history.length} 条（含本地种子）`;
+
+    // If this record comes from daily autorun, reflect the run stages/ID (otherwise it looks like "待运行").
+    if (dailyStatus && latest?.date && dailyStatus.date === latest.date) {
+      setRunMeta({
+        id: dailyStatus.runId || null,
+        time: dailyStatus.finishedAt ? `自动任务 ${formatRunTimestamp(dailyStatus.finishedAt)}` : null,
+      });
+      setWorkflowStatus(elements.workflowFetch, "完成");
+      setWorkflowStatus(elements.workflowValidate, "通过");
+      setWorkflowStatus(elements.workflowRun, "完成");
+      setWorkflowStatus(elements.workflowReplay, "可回放");
+      setRunStage(elements.runStageFetch, "完成");
+      setRunStage(elements.runStageValidate, "通过");
+      setRunStage(elements.runStageCompute, "完成");
+      setRunStage(elements.runStageReplay, "可回放");
+      setRunStage(elements.runStageAi, seededAi ? "完成" : "预生成");
     }
   } else {
     renderTimeline([], null);
@@ -2452,8 +2496,29 @@ async function bootstrapHistoryView() {
     dailyStatus &&
     dailyStatus.date === today &&
     (dailyStatus.status === "ok" || dailyStatus.status === "warn");
+  const hasToday = history.some((item) => item?.date === today);
 
-  if (!dailyReady && shouldAutoRun(history, today)) {
+  // Kick off full history load in background (does not block initial render).
+  loadSeedHistory()
+    .then((seed) => {
+      if (!seed.length) return;
+      const current = normalizeHistoryRecords(loadHistory());
+      const merged = mergeHistoryRecords(seed, current);
+      saveHistory(merged);
+      renderSnapshot(merged, selectedDate || timelineIndex.latestDate);
+      if (elements.evalBackfillStatus) {
+        elements.evalBackfillStatus.textContent = `已加载历史样本 ${merged.length} 条（含本地种子）`;
+      }
+    })
+    .catch(() => {});
+
+  // If daily task is ready but we still have no today's record (e.g. latest seed missing),
+  // fall back to a lightweight local run so the user sees data without clicking.
+  if (dailyReady && !hasToday) {
+    setTimeout(() => {
+      runToday({ mode: "auto" });
+    }, 300);
+  } else if (!dailyReady && shouldAutoRun(history, today)) {
     setTimeout(() => {
       runToday({ mode: "auto" });
     }, 300);
