@@ -14,6 +14,20 @@
 
 ![ETH-A Dashboard Mobile](/docs/screenshots/etha-mobile-full.png)
 
+关键模块（局部）：
+
+![决策总览](/docs/screenshots/section-decision.png)
+
+![行动映射](/docs/screenshots/section-action.png)
+
+![时间轴](/docs/screenshots/section-timeline.png)
+
+![闸门审计](/docs/screenshots/section-audit.png)
+
+![覆盖矩阵（片段）](/docs/screenshots/section-coverage.png)
+
+![预测评估](/docs/screenshots/section-eval.png)
+
 ---
 
 ## 功能概览
