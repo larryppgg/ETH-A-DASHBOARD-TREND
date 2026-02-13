@@ -2,7 +2,12 @@
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
+
+APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if APP_ROOT not in sys.path:
+    sys.path.insert(0, APP_ROOT)
 
 
 def build_seed_payload(
@@ -76,7 +81,7 @@ def parse_args(argv=None):
         dest="diff_threshold",
         type=float,
         default=0.015,
-        help="cross-check diff threshold ratio (default: 0.015 = 1.5%)",
+        help="cross-check diff threshold ratio (default: 0.015 = 1.5%%)",
     )
     return parser.parse_args(argv)
 
@@ -128,4 +133,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-
