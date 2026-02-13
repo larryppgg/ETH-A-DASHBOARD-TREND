@@ -111,6 +111,8 @@ node scripts/daily_autorun.mjs
 /volume1/docker/eth-a-dashboard-trend/bin/daily-run.sh
 ```
 
+> 兜底：即使未配置 DSM 任务，只要 `scripts/server.py` 常驻运行，也会在每天 08:05 后自动检查并触发一次日任务。
+
 ### 3) 查看状态
 
 ```bash

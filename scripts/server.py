@@ -5,6 +5,10 @@ import re
 import subprocess
 import tempfile
 import sys
+import threading
+import time
+from datetime import datetime
+from shutil import which
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from urllib import request
 from urllib.error import URLError, HTTPError
@@ -12,7 +16,12 @@ from urllib.error import URLError, HTTPError
 APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ROOT = os.path.join(APP_ROOT, "src")
 RUN_ROOT = os.path.join(APP_ROOT, "run")
+LOG_ROOT = os.path.join(APP_ROOT, "logs")
 ENV_PATH = os.path.join(APP_ROOT, ".env")
+DAILY_AUTORUN_SCRIPT = os.path.join(APP_ROOT, "scripts", "daily_autorun.mjs")
+DAILY_AUTORUN_TIME = (8, 5)
+
+_last_daily_attempt = None
 
 
 def should_disable_cache(path):
@@ -150,6 +159,68 @@ def load_daily_status():
     }
 
 
+def node_binary():
+    candidates = [
+        which("node"),
+        "/usr/local/bin/node",
+        "/volume1/@appstore/Node.js_v20/usr/local/bin/node",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def launch_daily_autorun():
+    if not os.path.exists(DAILY_AUTORUN_SCRIPT):
+        return False
+    node = node_binary()
+    if not node:
+        return False
+    os.makedirs(LOG_ROOT, exist_ok=True)
+    log_path = os.path.join(LOG_ROOT, "daily-run.log")
+    with open(log_path, "a", encoding="utf-8") as fp:
+        fp.write(f"[{datetime.now().isoformat()}] schedule trigger: daily_autorun\n")
+        fp.flush()
+        subprocess.Popen(
+            [node, DAILY_AUTORUN_SCRIPT],
+            cwd=APP_ROOT,
+            stdout=fp,
+            stderr=fp,
+            env=os.environ.copy(),
+        )
+    return True
+
+
+def maybe_schedule_daily_autorun():
+    global _last_daily_attempt
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    hour, minute = DAILY_AUTORUN_TIME
+    if now.hour < hour or (now.hour == hour and now.minute < minute):
+        return
+    if _last_daily_attempt == today:
+        return
+    _last_daily_attempt = today
+    status = load_daily_status()
+    if status.get("date") == today and status.get("status") in ("ok", "warn", "running"):
+        return
+    launch_daily_autorun()
+
+
+def start_daily_scheduler():
+    def loop():
+        while True:
+            try:
+                maybe_schedule_daily_autorun()
+            except Exception:
+                pass
+            time.sleep(60)
+
+    thread = threading.Thread(target=loop, name="daily-autorun-scheduler", daemon=True)
+    thread.start()
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -255,6 +326,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("PORT", "5173"))
+    start_daily_scheduler()
     httpd = HTTPServer(("0.0.0.0", port), Handler)
     print(f"Serving on http://localhost:{port}")
     httpd.serve_forever()
