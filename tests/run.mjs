@@ -510,6 +510,8 @@ function testLayoutSkeleton() {
     "workflowValidate",
     "workflowRun",
     "workflowReplay",
+    "runMetaDailyStatus",
+    "runMetaDailyAt",
     "historyRange",
     "historyDate",
     "historyHint",
