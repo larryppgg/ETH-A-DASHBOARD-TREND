@@ -9,15 +9,17 @@ from http.server import SimpleHTTPRequestHandler, HTTPServer
 from urllib import request
 from urllib.error import URLError, HTTPError
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
-ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ROOT = os.path.join(APP_ROOT, "src")
+RUN_ROOT = os.path.join(APP_ROOT, "run")
+ENV_PATH = os.path.join(APP_ROOT, ".env")
 
 
 def should_disable_cache(path):
     if not path:
         return False
     path = path.split("?", 1)[0]
-    return path.endswith((".js", ".css", ".json", ".mjs"))
+    return path.endswith((".js", ".css", ".json", ".mjs")) or path == "/data/daily-status"
 
 
 def load_env(path):
@@ -126,6 +128,28 @@ def persist_auto_snapshot(payload):
         return
 
 
+def load_daily_status():
+    status_path = os.path.join(RUN_ROOT, "daily_status.json")
+    if not os.path.exists(status_path):
+        return {
+            "status": "unknown",
+            "date": None,
+            "message": "daily autorun not initialized",
+        }
+    try:
+        with open(status_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {
+        "status": "unknown",
+        "date": None,
+        "message": "daily status unreadable",
+    }
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
@@ -148,7 +172,11 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
     def do_GET(self):
-        if self.path == "/ai/status":
+        request_path = self.path.split("?", 1)[0]
+        if request_path == "/data/daily-status":
+            self._send_json(load_daily_status())
+            return
+        if request_path == "/ai/status":
             env = load_env(ENV_PATH)
             enabled = bool(env.get("DOUBAO_API_KEY") and env.get("DOUBAO_MODEL"))
             self._send_json({"enabled": enabled})

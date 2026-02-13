@@ -176,8 +176,14 @@ class TestCollectorFetchJson(unittest.TestCase):
         self.assertTrue(server.should_disable_cache("/app.js"), "js 应禁止缓存")
         self.assertTrue(server.should_disable_cache("/styles.css"), "css 应禁止缓存")
         self.assertTrue(server.should_disable_cache("/data/auto.json"), "json 应禁止缓存")
+        self.assertTrue(server.should_disable_cache("/data/daily-status"), "daily-status 应禁止缓存")
         self.assertTrue(server.should_disable_cache("/ui/render.js?v=1"), "带参数的 js 也应禁止缓存")
         self.assertFalse(server.should_disable_cache("/image.png"), "非文本资源可缓存")
+
+    def test_load_daily_status_default(self):
+        with patch("os.path.exists", return_value=False):
+            payload = server.load_daily_status()
+        self.assertEqual(payload.get("status"), "unknown", "未初始化时应返回 unknown")
 
     def test_payload_contains_field_updated_at(self):
         captured = {}

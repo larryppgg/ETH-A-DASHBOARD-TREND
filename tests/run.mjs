@@ -537,8 +537,8 @@ function testLayoutSkeleton() {
 
 function testCacheBustingAssets() {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf-8");
-  assert(html.includes("styles.css?v=20260212-3"), "样式应带最新 cache bust 参数");
-  assert(html.includes("app.js?v=20260212-3"), "脚本应带最新 cache bust 参数");
+  assert(html.includes("styles.css?v=20260213-1"), "样式应带最新 cache bust 参数");
+  assert(html.includes("app.js?v=20260213-1"), "脚本应带最新 cache bust 参数");
 }
 
 function testNoInlineRunOnclick() {

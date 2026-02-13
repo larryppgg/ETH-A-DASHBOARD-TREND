@@ -34,6 +34,11 @@ npm run fetch
 npm run backfill -- --days 365 --step 7
 ```
 
+执行一次“当日自动任务”（抓取 + 计算 + AI 预生成）：
+```bash
+npm run daily-run
+```
+
 备用方式：
 ```bash
 bash scripts/dev.sh
@@ -73,7 +78,46 @@ bash scripts/dev.sh
 - `npm run dev`：抓取 + 启动本地服务
 - `npm run fetch`：仅抓取并写入 `src/data/auto.json`
 - `npm run backfill -- --days 365 --step 7`：批量回抓历史并写入 `src/data/history.seed.json`
+- `npm run daily-run`：执行每日自动任务，更新 `auto.json + history.seed.json + ai.seed.json + run/daily_status.json`
 - `npm test`：运行前端规则与逻辑测试
+
+---
+
+## NAS 每日自动运行（08:05）
+
+目标：不打开网页也会每天自动跑完，手机打开域名直接看当日结果。
+
+### 1) 在 NAS 业务目录执行一次脚本
+
+```bash
+cd /volume1/docker/eth-a-dashboard-trend/app
+node scripts/daily_autorun.mjs
+```
+
+成功后会更新：
+- `src/data/auto.json`
+- `src/data/history.seed.json`
+- `src/data/ai.seed.json`
+- `run/daily_status.json`
+
+### 2) 配置定时任务（DSM Task Scheduler）
+
+- 任务名：`eth-a-daily-autorun`
+- 用户：`mac-codex`
+- 计划：每天 `08:05`
+- 命令：
+
+```bash
+/volume1/docker/eth-a-dashboard-trend/bin/daily-run.sh
+```
+
+### 3) 查看状态
+
+```bash
+cat /volume1/docker/eth-a-dashboard-trend/app/run/daily_status.json
+tail -n 200 /volume1/docker/eth-a-dashboard-trend/logs/daily-run.log
+curl -sS http://127.0.0.1:5173/data/daily-status
+```
 
 ---
 
