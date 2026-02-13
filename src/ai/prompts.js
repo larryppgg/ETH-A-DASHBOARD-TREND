@@ -28,7 +28,7 @@ export function buildSummaryPrompt(output, input) {
     `4) 【最大风险】1条最关键风险阻断；\n` +
     `5) 【执行约束】一句话说明漂移/交易成本是否限制仓位；\n` +
     `6) 【下一步盯】给1个最关键指标 + 触发阈值（若无精确阈值，用方向+相对强弱）；\n` +
-    `6) 禁止空话，禁止免责声明，120-180字。`;
+    `7) 禁止空话，禁止免责声明，120-180字。`;
 }
 
 export function buildGatePrompt(gate) {

@@ -787,12 +787,18 @@ body[data-status-level="danger"] .run-bar {
 }
 
 .gate-chain-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  display: flex;
   gap: 10px;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  scroll-snap-type: x proximity;
 }
 
 .gate-chain-card {
+  flex: 0 0 250px;
+  width: 250px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
   background: rgba(14, 18, 26, 0.86);
@@ -802,6 +808,7 @@ body[data-status-level="danger"] .run-bar {
   text-align: left;
   cursor: pointer;
   color: var(--ink);
+  scroll-snap-align: start;
 }
 
 .gate-chain-card.active {
@@ -929,6 +936,12 @@ body[data-status-level="danger"] .run-bar {
   line-height: 1.45;
 }
 
+.audit-verdict-meta {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.62);
+  line-height: 1.4;
+}
+
 .audit-section {
   display: grid;
   gap: 8px;
@@ -948,11 +961,15 @@ body[data-status-level="danger"] .run-bar {
 
 .audit-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(150px, 1fr) minmax(180px, 1.25fr);
+  grid-template-columns: minmax(150px, 1fr) minmax(180px, 1fr) minmax(240px, 1.2fr);
   gap: 8px;
   align-items: center;
   font-size: 11px;
   color: var(--ink);
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .audit-key {
@@ -1017,7 +1034,7 @@ body[data-status-level="danger"] .run-bar {
 
 .audit-kv-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
 }
 
@@ -1026,6 +1043,9 @@ body[data-status-level="danger"] .run-bar {
   justify-content: space-between;
   font-size: 11px;
   color: var(--ink);
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .action-panel {
@@ -2519,7 +2539,14 @@ body[data-status-level="danger"] .run-bar {
     grid-template-columns: 1fr;
   }
   .gate-chain-grid {
+    display: grid;
     grid-template-columns: 1fr;
+    overflow: visible;
+    scroll-snap-type: none;
+  }
+  .gate-chain-card {
+    width: 100%;
+    flex: 1 1 auto;
   }
   .coverage-ai {
     grid-template-columns: 1fr;

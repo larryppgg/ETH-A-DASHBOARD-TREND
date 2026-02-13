@@ -348,7 +348,22 @@ export function renderAuditVisual(container, gate) {
   const sources = details.sources || {};
   const calc = details.calc || {};
   const rules = details.rules || [];
-  const inputRows = Object.entries(inputs)
+  const inputEntries = Object.entries(inputs).sort(([a], [b]) => a.localeCompare(b));
+  let staleCount = 0;
+  let agingCount = 0;
+  let missingCount = 0;
+  inputEntries.forEach(([key, value]) => {
+    if (value === null || value === undefined) missingCount += 1;
+    const level = details.timings?.[key]?.freshness?.level;
+    if (level === "stale") staleCount += 1;
+    if (level === "aging") agingCount += 1;
+  });
+  const verdictMeta = [
+    `状态 ${String(gate.status || "open").toUpperCase()}`,
+    `缺失 ${missingCount}`,
+    staleCount ? `过期 ${staleCount}` : agingCount ? `衰减 ${agingCount}` : "时效 OK",
+  ].join(" · ");
+  const inputRows = inputEntries
     .map(([key, value]) => {
       const source = sources[key] || "来源缺失";
       const timing = details.timings?.[key] || {};
@@ -395,14 +410,18 @@ export function renderAuditVisual(container, gate) {
     <div class="audit-verdict">
       <span>当前结论</span>
       <strong>${toPlainText(gate.note || "暂无结论")}</strong>
-    </div>
-    <div class="coverage-ai coverage-ai-gate" data-gate-ai-inline="${gate.id}" data-state="pending">
-      <span class="coverage-ai-tag">AI 解读</span>
-      <span class="coverage-ai-text">等待生成...</span>
-      <button class="coverage-ai-toggle" type="button" hidden>展开</button>
+      <div class="audit-verdict-meta">${verdictMeta}</div>
     </div>
     <div class="audit-section">
-      <div class="audit-title">输入与来源</div>
+      <div class="audit-title">AI 解读（结论 / 依据 / 动作 / 反证 / 时效）</div>
+      <div class="coverage-ai coverage-ai-gate" data-gate-ai-inline="${gate.id}" data-state="pending">
+        <span class="coverage-ai-tag">AI 解读</span>
+        <span class="coverage-ai-text">等待生成...</span>
+        <button class="coverage-ai-toggle" type="button" hidden>展开</button>
+      </div>
+    </div>
+    <div class="audit-section">
+      <div class="audit-title">输入与来源（字段级时间）</div>
       <div class="audit-list">${inputRows || '<div class="inspector-empty">无输入</div>'}</div>
     </div>
     <div class="audit-section">

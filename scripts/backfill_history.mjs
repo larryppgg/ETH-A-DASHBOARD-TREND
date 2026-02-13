@@ -12,6 +12,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const COLLECTOR = path.join(ROOT, "scripts", "collector.py");
 const DEFAULT_OUTPUT = path.join(ROOT, "src", "data", "history.seed.json");
+const DEFAULT_STATUS_OUTPUT = path.join(ROOT, "run", "backfill_status.json");
+const LOCK_PATH = path.join(ROOT, "run", "backfill_history.lock");
 const EXECUTION_COST_BPS = 12;
 const inputSchema = {
   dxy5d: "number",
@@ -65,11 +67,13 @@ const inputSchema = {
 function parseArgs(argv) {
   const args = {
     days: 365,
-    step: 7,
+    step: 1,
     horizon: 14,
     asOf: new Date().toISOString().slice(0, 10),
     output: DEFAULT_OUTPUT,
+    statusOutput: DEFAULT_STATUS_OUTPUT,
     timeoutSec: 300,
+    resume: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -78,13 +82,47 @@ function parseArgs(argv) {
     else if (token === "--horizon") args.horizon = Number(argv[++i] || args.horizon);
     else if (token === "--as-of") args.asOf = argv[++i] || args.asOf;
     else if (token === "--output") args.output = path.resolve(ROOT, argv[++i] || args.output);
+    else if (token === "--status-output") args.statusOutput = path.resolve(ROOT, argv[++i] || args.statusOutput);
     else if (token === "--timeout") args.timeoutSec = Number(argv[++i] || args.timeoutSec);
+    else if (token === "--no-resume") args.resume = false;
   }
   args.days = Number.isFinite(args.days) && args.days > 0 ? Math.floor(args.days) : 365;
   args.step = Number.isFinite(args.step) && args.step > 0 ? Math.floor(args.step) : 7;
   args.horizon = Number.isFinite(args.horizon) && args.horizon > 0 ? Math.floor(args.horizon) : 14;
   args.timeoutSec = Number.isFinite(args.timeoutSec) && args.timeoutSec > 0 ? Math.floor(args.timeoutSec) : 300;
   return args;
+}
+
+function readJson(pathname, fallback = null) {
+  if (!fs.existsSync(pathname)) return fallback;
+  try {
+    return JSON.parse(fs.readFileSync(pathname, "utf-8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(pathname, payload) {
+  fs.mkdirSync(path.dirname(pathname), { recursive: true });
+  const tmpPath = `${pathname}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), "utf-8");
+  fs.renameSync(tmpPath, pathname);
+}
+
+function acquireLock(lockPath) {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const fd = fs.openSync(lockPath, "wx");
+  fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), "utf-8");
+  return fd;
+}
+
+function releaseLock(fd, lockPath) {
+  try {
+    if (fd !== null && fd !== undefined) fs.closeSync(fd);
+  } catch {}
+  try {
+    if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+  } catch {}
 }
 
 function parseIsoDate(dateStr) {
@@ -264,87 +302,235 @@ function readSeedHistory(filePath) {
   }
 }
 
+function buildBackfillStatus(base = {}) {
+  return {
+    status: base.status || "idle",
+    phase: base.phase || "idle",
+    asOfDate: base.asOfDate || null,
+    days: Number.isFinite(base.days) ? base.days : null,
+    step: Number.isFinite(base.step) ? base.step : null,
+    horizon: Number.isFinite(base.horizon) ? base.horizon : null,
+    startedAt: base.startedAt || null,
+    finishedAt: base.finishedAt || null,
+    total: Number.isFinite(base.total) ? base.total : 0,
+    processed: Number.isFinite(base.processed) ? base.processed : 0,
+    added: Number.isFinite(base.added) ? base.added : 0,
+    skipped: Number.isFinite(base.skipped) ? base.skipped : 0,
+    failed: Number.isFinite(base.failed) ? base.failed : 0,
+    remaining: Number.isFinite(base.remaining) ? base.remaining : 0,
+    currentDate: base.currentDate || null,
+    failures: Array.isArray(base.failures) ? base.failures : [],
+    message: base.message || "",
+    output: base.output || null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function writeBackfillStatus(pathname, status) {
+  writeJson(pathname, buildBackfillStatus(status));
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
+  let lockFd = null;
+  try {
+    lockFd = acquireLock(LOCK_PATH);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      writeBackfillStatus(args.statusOutput, {
+        status: "running",
+        phase: "locked",
+        message: "已有回填任务在运行，跳过重复启动",
+      });
+      console.log("已有回填任务在运行，已跳过。");
+      return;
+    }
+    throw error;
+  }
+
   const dates = buildBackfillDates(args.days, args.asOf, args.horizon, args.step);
-  let history = readSeedHistory(args.output)
+  let history = (args.resume ? readSeedHistory(args.output) : [])
     .filter((item) => item && typeof item.date === "string" && item.input && item.output)
     .sort((a, b) => a.date.localeCompare(b.date));
 
+  const startAt = new Date().toISOString();
+  const failedList = [];
   let added = 0;
   let skipped = 0;
   let failed = 0;
+  let processed = 0;
+
+  writeBackfillStatus(args.statusOutput, {
+    status: "running",
+    phase: "collect",
+    asOfDate: args.asOf,
+    days: args.days,
+    step: args.step,
+    horizon: args.horizon,
+    startedAt: startAt,
+    total: dates.length,
+    processed,
+    added,
+    skipped,
+    failed,
+    remaining: Math.max(0, dates.length - processed),
+    output: args.output,
+    message: "回填任务已启动",
+  });
 
   console.log(`开始回测补齐: as-of=${args.asOf}, days=${args.days}, step=${args.step}, samples=${dates.length}`);
-  for (let idx = 0; idx < dates.length; idx += 1) {
-    const date = dates[idx];
-    const progress = `[${idx + 1}/${dates.length}] ${date}`;
-    if (history.some((item) => item.date === date)) {
-      skipped += 1;
-      console.log(`${progress} 跳过（已存在）`);
-      continue;
-    }
-    try {
-      const payload = runCollectorForDate(date, args.timeoutSec);
-      const normalized = normalizeInputForRun({ ...(payload.data || {}) }, history, date);
-      hydrateMetadata(normalized, payload);
-      coerceInputTypes(normalized);
-      applyHalfLifeGate(normalized, Object.keys(inputSchema), date);
-      backfillMissingFromHistory(normalized, history, date);
-      refreshMissingFields(normalized);
-      const errors = validateInput(normalized);
-      if (errors.length) {
-        failed += 1;
-        console.log(`${progress} 失败（字段不完整: ${errors.slice(0, 4).join(" | ")}）`);
+  try {
+    for (let idx = 0; idx < dates.length; idx += 1) {
+      const date = dates[idx];
+      const progress = `[${idx + 1}/${dates.length}] ${date}`;
+      if (history.some((item) => item.date === date)) {
+        skipped += 1;
+        processed += 1;
+        writeBackfillStatus(args.statusOutput, {
+          status: "running",
+          phase: "collect",
+          asOfDate: args.asOf,
+          days: args.days,
+          step: args.step,
+          horizon: args.horizon,
+          startedAt: startAt,
+          total: dates.length,
+          processed,
+          added,
+          skipped,
+          failed,
+          remaining: Math.max(0, dates.length - processed),
+          currentDate: date,
+          failures: failedList.slice(-200),
+          output: args.output,
+          message: "跳过已存在日期",
+        });
+        console.log(`${progress} 跳过（已存在）`);
         continue;
       }
-      const driftSignal = deriveDriftSignal(history, {
-        horizon: 7,
-        asOfDate: date,
-        minSamples: 6,
-        lookback: 18,
-      });
-      const prevRecord = latestRecordBefore(history, date);
-      const output = runPipeline(normalized, {
-        asOfDate: date,
-        drift: driftSignal,
-        previousBeta: prevRecord?.output?.beta,
-        costBps: EXECUTION_COST_BPS,
-      });
-      history.push({ date, input: normalized, output });
-      history.sort((a, b) => a.date.localeCompare(b.date));
-      added += 1;
-      if ((idx + 1) % 5 === 0) {
-        fs.writeFileSync(
-          args.output,
-          JSON.stringify({ generatedAt: new Date().toISOString(), asOfDate: args.asOf, days: args.days, step: args.step, history }, null, 2),
-          "utf-8"
-        );
+      try {
+        const payload = runCollectorForDate(date, args.timeoutSec);
+        const normalized = normalizeInputForRun({ ...(payload.data || {}) }, history, date);
+        hydrateMetadata(normalized, payload);
+        coerceInputTypes(normalized);
+        applyHalfLifeGate(normalized, Object.keys(inputSchema), date);
+        backfillMissingFromHistory(normalized, history, date);
+        refreshMissingFields(normalized);
+        const errors = validateInput(normalized);
+        if (errors.length) {
+          failed += 1;
+          failedList.push({ date, error: `字段不完整: ${errors.slice(0, 4).join(" | ")}` });
+          console.log(`${progress} 失败（字段不完整: ${errors.slice(0, 4).join(" | ")}）`);
+          continue;
+        }
+        const driftSignal = deriveDriftSignal(history, {
+          horizon: 7,
+          asOfDate: date,
+          minSamples: 6,
+          lookback: 18,
+        });
+        const prevRecord = latestRecordBefore(history, date);
+        const output = runPipeline(normalized, {
+          asOfDate: date,
+          drift: driftSignal,
+          previousBeta: prevRecord?.output?.beta,
+          costBps: EXECUTION_COST_BPS,
+        });
+        history.push({ date, input: normalized, output });
+        history.sort((a, b) => a.date.localeCompare(b.date));
+        added += 1;
+        if ((idx + 1) % 5 === 0) {
+          writeJson(args.output, {
+            generatedAt: new Date().toISOString(),
+            asOfDate: args.asOf,
+            days: args.days,
+            step: args.step,
+            history,
+          });
+        }
+        console.log(`${progress} 完成`);
+      } catch (error) {
+        failed += 1;
+        failedList.push({ date, error: error.message || "未知错误" });
+        console.log(`${progress} 失败（${error.message || "未知错误"}）`);
+      } finally {
+        processed += 1;
+        writeBackfillStatus(args.statusOutput, {
+          status: "running",
+          phase: "compute",
+          asOfDate: args.asOf,
+          days: args.days,
+          step: args.step,
+          horizon: args.horizon,
+          startedAt: startAt,
+          total: dates.length,
+          processed,
+          added,
+          skipped,
+          failed,
+          remaining: Math.max(0, dates.length - processed),
+          currentDate: date,
+          failures: failedList.slice(-200),
+          output: args.output,
+          message: "回填执行中",
+        });
       }
-      console.log(`${progress} 完成`);
-    } catch (error) {
-      failed += 1;
-      console.log(`${progress} 失败（${error.message || "未知错误"}）`);
     }
-  }
 
-  fs.mkdirSync(path.dirname(args.output), { recursive: true });
-  fs.writeFileSync(
-    args.output,
-    JSON.stringify(
-      {
-        generatedAt: new Date().toISOString(),
-        asOfDate: args.asOf,
-        days: args.days,
-        step: args.step,
-        history,
-      },
-      null,
-      2
-    ),
-    "utf-8"
-  );
-  console.log(`回测补齐完成：新增 ${added}，已存在 ${skipped}，失败 ${failed}，总样本 ${history.length}`);
+    writeJson(args.output, {
+      generatedAt: new Date().toISOString(),
+      asOfDate: args.asOf,
+      days: args.days,
+      step: args.step,
+      history,
+    });
+    const finishAt = new Date().toISOString();
+    writeBackfillStatus(args.statusOutput, {
+      status: failed ? "done" : "ok",
+      phase: "done",
+      asOfDate: args.asOf,
+      days: args.days,
+      step: args.step,
+      horizon: args.horizon,
+      startedAt: startAt,
+      finishedAt: finishAt,
+      total: dates.length,
+      processed,
+      added,
+      skipped,
+      failed,
+      remaining: Math.max(0, dates.length - processed),
+      currentDate: null,
+      failures: failedList.slice(-200),
+      output: args.output,
+      message: `回填完成：新增 ${added}，跳过 ${skipped}，失败 ${failed}`,
+    });
+    console.log(`回测补齐完成：新增 ${added}，已存在 ${skipped}，失败 ${failed}，总样本 ${history.length}`);
+  } catch (error) {
+    writeBackfillStatus(args.statusOutput, {
+      status: "fail",
+      phase: "error",
+      asOfDate: args.asOf,
+      days: args.days,
+      step: args.step,
+      horizon: args.horizon,
+      startedAt: startAt,
+      finishedAt: new Date().toISOString(),
+      total: dates.length,
+      processed,
+      added,
+      skipped,
+      failed,
+      remaining: Math.max(0, dates.length - processed),
+      currentDate: null,
+      failures: failedList.slice(-200),
+      output: args.output,
+      message: error?.message || "回填任务失败",
+    });
+    throw error;
+  } finally {
+    releaseLock(lockFd, LOCK_PATH);
+  }
 }
 
 main();

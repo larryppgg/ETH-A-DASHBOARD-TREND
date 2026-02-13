@@ -260,6 +260,8 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
   const pendingRows = evaluation.rows.filter(
     (row) => !horizonKeys.some((key) => row.horizons[key]?.hit !== null)
   );
+  const totalRows = evaluation.rows.length;
+  const maturityRatio = totalRows ? ((maturedRows.length / totalRows) * 100).toFixed(1) : "0.0";
   const recent = maturedRows.slice(-10).reverse();
   const tableRows = recent
     .map((row) => {
@@ -310,6 +312,11 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
         <div class="k">待验证样本</div>
         <div class="v">${pendingRows.length}</div>
         <div class="s">这些日期尚未到达 7D/14D 验证窗口</div>
+      </div>
+      <div class="eval-card">
+        <div class="k">样本充分度</div>
+        <div class="v">${maturedRows.length}/${totalRows}</div>
+        <div class="s">成熟占比 ${maturityRatio}% · 缺口 ${pendingRows.length}</div>
       </div>
       ${cards}
     </div>

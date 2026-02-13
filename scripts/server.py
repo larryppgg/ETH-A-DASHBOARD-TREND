@@ -19,16 +19,18 @@ RUN_ROOT = os.path.join(APP_ROOT, "run")
 LOG_ROOT = os.path.join(APP_ROOT, "logs")
 ENV_PATH = os.path.join(APP_ROOT, ".env")
 DAILY_AUTORUN_SCRIPT = os.path.join(APP_ROOT, "scripts", "daily_autorun.mjs")
+BACKFILL_SCRIPT = os.path.join(APP_ROOT, "scripts", "backfill_history.mjs")
 DAILY_AUTORUN_TIME = (8, 5)
 
 _last_daily_attempt = None
+_backfill_process = None
 
 
 def should_disable_cache(path):
     if not path:
         return False
     path = path.split("?", 1)[0]
-    return path.endswith((".js", ".css", ".json", ".mjs")) or path == "/data/daily-status"
+    return path.endswith((".js", ".css", ".json", ".mjs")) or path in ("/data/daily-status", "/data/backfill-status")
 
 
 def load_env(path):
@@ -140,10 +142,54 @@ def persist_auto_snapshot(payload):
 def load_daily_status():
     status_path = os.path.join(RUN_ROOT, "daily_status.json")
     if not os.path.exists(status_path):
-        return {
+        return _normalize_daily_status({
             "status": "unknown",
             "date": None,
             "message": "daily autorun not initialized",
+        })
+    try:
+        with open(status_path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        if isinstance(payload, dict):
+            return _normalize_daily_status(payload)
+    except Exception:
+        pass
+    return _normalize_daily_status({
+        "status": "unknown",
+        "date": None,
+        "message": "daily status unreadable",
+    })
+
+
+def _normalize_daily_status(payload):
+    if not isinstance(payload, dict):
+        payload = {}
+    started_at = payload.get("startedAt")
+    finished_at = payload.get("finishedAt")
+    duration_ms = payload.get("durationMs")
+    if duration_ms is None and started_at and finished_at:
+        try:
+            start_dt = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
+            duration_ms = max(0, int((end_dt - start_dt).total_seconds() * 1000))
+        except Exception:
+            duration_ms = None
+    payload["durationMs"] = duration_ms
+    payload.setdefault("phase", payload.get("status") or "unknown")
+    payload.setdefault("lastErrorStage", None)
+    payload.setdefault("lastSuccessAt", None)
+    return payload
+
+
+def load_backfill_status():
+    status_path = os.path.join(RUN_ROOT, "backfill_status.json")
+    if not os.path.exists(status_path):
+        return {
+            "status": "idle",
+            "phase": "idle",
+            "message": "backfill not started",
+            "processed": 0,
+            "total": 0,
         }
     try:
         with open(status_path, "r", encoding="utf-8") as fp:
@@ -153,9 +199,11 @@ def load_daily_status():
     except Exception:
         pass
     return {
-        "status": "unknown",
-        "date": None,
-        "message": "daily status unreadable",
+        "status": "fail",
+        "phase": "error",
+        "message": "backfill status unreadable",
+        "processed": 0,
+        "total": 0,
     }
 
 
@@ -190,6 +238,48 @@ def launch_daily_autorun():
             env=os.environ.copy(),
         )
     return True
+
+
+def launch_backfill(days=365, step=1, horizon=14, as_of=None, timeout_sec=600):
+    global _backfill_process
+    if not os.path.exists(BACKFILL_SCRIPT):
+        raise RuntimeError("backfill script not found")
+    node = node_binary()
+    if not node:
+        raise RuntimeError("node binary not found")
+
+    if _backfill_process and _backfill_process.poll() is None:
+        return {"started": False, "status": "running", "pid": _backfill_process.pid}
+
+    os.makedirs(LOG_ROOT, exist_ok=True)
+    log_path = os.path.join(LOG_ROOT, "backfill.log")
+    cmd = [
+        node,
+        BACKFILL_SCRIPT,
+        "--days",
+        str(days),
+        "--step",
+        str(step),
+        "--horizon",
+        str(horizon),
+        "--timeout",
+        str(timeout_sec),
+    ]
+    if as_of:
+        cmd.extend(["--as-of", as_of])
+    with open(log_path, "a", encoding="utf-8") as fp:
+        fp.write(
+            f"[{datetime.now().isoformat()}] start backfill days={days} step={step} horizon={horizon} asOf={as_of}\n"
+        )
+        fp.flush()
+        _backfill_process = subprocess.Popen(
+            cmd,
+            cwd=APP_ROOT,
+            stdout=fp,
+            stderr=fp,
+            env=os.environ.copy(),
+        )
+    return {"started": True, "status": "running", "pid": _backfill_process.pid}
 
 
 def maybe_schedule_daily_autorun():
@@ -247,6 +337,9 @@ class Handler(SimpleHTTPRequestHandler):
         if request_path == "/data/daily-status":
             self._send_json(load_daily_status())
             return
+        if request_path == "/data/backfill-status":
+            self._send_json(load_backfill_status())
+            return
         if request_path == "/ai/status":
             env = load_env(ENV_PATH)
             enabled = bool(env.get("DOUBAO_API_KEY") and env.get("DOUBAO_MODEL"))
@@ -278,6 +371,36 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             except Exception as exc:
                 self._send_json({"error": f"collector error: {exc}"}, status=502)
+                return
+        if self.path == "/data/backfill":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                self._send_json({"error": "invalid json"}, status=400)
+                return
+            days = payload.get("days", 365)
+            step = payload.get("step", 1)
+            horizon = payload.get("horizon", 14)
+            timeout_sec = payload.get("timeoutSec", 600)
+            as_of = (payload.get("asOfDate") or payload.get("asOf") or "").strip() or None
+            try:
+                days = max(30, int(days))
+                step = max(1, int(step))
+                horizon = max(1, int(horizon))
+                timeout_sec = max(120, int(timeout_sec))
+                if as_of and not re.match(r"^\d{4}-\d{2}-\d{2}$", as_of):
+                    raise ValueError("invalid asOfDate")
+            except Exception:
+                self._send_json({"error": "invalid backfill params"}, status=400)
+                return
+            try:
+                result = launch_backfill(days=days, step=step, horizon=horizon, as_of=as_of, timeout_sec=timeout_sec)
+                self._send_json(result, status=202 if result.get("started") else 200)
+                return
+            except Exception as exc:
+                self._send_json({"error": f"backfill start failed: {exc}"}, status=502)
                 return
         if self.path not in ("/ai/summary", "/ai/gate", "/ai/overall"):
             self.send_response(404)

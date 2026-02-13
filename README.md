@@ -31,7 +31,7 @@ npm run fetch
 
 补齐历史回测样本（让预测评估表减少 `PENDING`）：
 ```bash
-npm run backfill -- --days 365 --step 7
+npm run backfill -- --days 365 --step 1 --horizon 14
 ```
 
 执行一次“当日自动任务”（抓取 + 计算 + AI 预生成）：
@@ -77,7 +77,7 @@ bash scripts/dev.sh
 
 - `npm run dev`：抓取 + 启动本地服务
 - `npm run fetch`：仅抓取并写入 `src/data/auto.json`
-- `npm run backfill -- --days 365 --step 7`：批量回抓历史并写入 `src/data/history.seed.json`
+- `npm run backfill -- --days 365 --step 1 --horizon 14`：批量回抓历史并写入 `src/data/history.seed.json`
 - `npm run daily-run`：执行每日自动任务，更新 `auto.json + history.seed.json + ai.seed.json + run/daily_status.json`
 - `npm test`：运行前端规则与逻辑测试
 
@@ -113,12 +113,20 @@ node scripts/daily_autorun.mjs
 
 > 兜底：即使未配置 DSM 任务，只要 `scripts/server.py` 常驻运行，也会在每天 08:05 后自动检查并触发一次日任务。
 
+### 回测任务 API（可选）
+
+- `POST /data/backfill`：启动服务端历史回填任务（异步）
+- `GET /data/backfill-status`：查看回填进度（processed/total/added/failed）
+
 ### 3) 查看状态
 
 ```bash
 cat /volume1/docker/eth-a-dashboard-trend/app/run/daily_status.json
+cat /volume1/docker/eth-a-dashboard-trend/app/run/backfill_status.json
 tail -n 200 /volume1/docker/eth-a-dashboard-trend/logs/daily-run.log
+tail -n 200 /volume1/docker/eth-a-dashboard-trend/logs/backfill.log
 curl -sS http://127.0.0.1:5173/data/daily-status
+curl -sS http://127.0.0.1:5173/data/backfill-status
 ```
 
 ---
