@@ -6,7 +6,11 @@ export function cacheHistory(history) {
     savedAt: Date.now(),
     history,
   };
-  localStorage.setItem(historyCacheKey, JSON.stringify(payload));
+  try {
+    localStorage.setItem(historyCacheKey, JSON.stringify(payload));
+  } catch {
+    // History seeds can be large (365d backfill). Don't let quota errors break boot.
+  }
 }
 
 export function loadCachedHistory() {
@@ -23,5 +27,9 @@ export function loadCachedHistory() {
 }
 
 export function resetCachedHistory() {
-  localStorage.removeItem(historyCacheKey);
+  try {
+    localStorage.removeItem(historyCacheKey);
+  } catch {
+    // ignore
+  }
 }

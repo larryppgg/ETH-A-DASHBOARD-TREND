@@ -336,7 +336,12 @@ const inputSchema = {
 
 const templateInput = Object.fromEntries(Object.keys(inputSchema).map((key) => [key, null]));
 
+// Full history seeds can exceed browser LocalStorage quota (e.g. 365d backfill).
+// Keep a best-effort in-memory history for the current session and persist only when it fits.
+let historyMemory = [];
+
 function loadHistory() {
+  if (Array.isArray(historyMemory) && historyMemory.length) return historyMemory;
   const raw = localStorage.getItem(storageKey);
   if (!raw) return [];
   try {
@@ -347,8 +352,24 @@ function loadHistory() {
 }
 
 function saveHistory(history) {
-  localStorage.setItem(storageKey, JSON.stringify(history));
-  cacheHistory(history);
+  const normalized = normalizeHistoryRecords(history);
+  historyMemory = normalized;
+
+  const persist = (records) => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(records));
+      cacheHistory(records);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Avoid stringifying very large history arrays (slow + likely over LocalStorage quota).
+  const primary = normalized.length <= 120 ? normalized : normalized.slice(-60);
+  if (persist(primary)) return;
+  // Fall back to a smaller slice so we at least remember recent runs across reloads.
+  persist(normalized.slice(-60));
 }
 
 function normalizeHistoryRecords(records) {
@@ -1842,7 +1863,12 @@ async function runToday(options = {}) {
 }
 
 function clearHistory() {
-  localStorage.removeItem(storageKey);
+  historyMemory = [];
+  try {
+    localStorage.removeItem(storageKey);
+  } catch {
+    // ignore
+  }
   resetCachedHistory();
   showError([]);
   renderTimeline([], null);
