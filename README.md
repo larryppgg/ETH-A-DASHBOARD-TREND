@@ -4,6 +4,18 @@
 
 ---
 
+## 截图（自动生成）
+
+桌面端全页：
+
+![ETH-A Dashboard Desktop](/docs/screenshots/etha-desktop-full.png)
+
+移动端全页：
+
+![ETH-A Dashboard Mobile](/docs/screenshots/etha-mobile-full.png)
+
+---
+
 ## 功能概览
 
 - **总览态势层**：当前档位、动作建议、核心驱动、风险阻断一屏可读
