@@ -30,7 +30,14 @@ def should_disable_cache(path):
     if not path:
         return False
     path = path.split("?", 1)[0]
-    return path.endswith((".js", ".css", ".json", ".mjs")) or path in ("/data/daily-status", "/data/backfill-status")
+    # Mobile browsers (esp. iOS Safari) can aggressively cache HTML, which then pins old module URLs.
+    # Disable caching for HTML entrypoints so deployments take effect without manual cache clears.
+    if path in ("/", "/index.html"):
+        return True
+    return path.endswith((".js", ".css", ".json", ".mjs", ".html")) or path in (
+        "/data/daily-status",
+        "/data/backfill-status",
+    )
 
 
 def load_env(path):
