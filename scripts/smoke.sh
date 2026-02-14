@@ -8,7 +8,12 @@ echo "Smoke: $BASE_URL"
 fetch() {
   path="$1"
   echo "== $path"
-  curl -fsS "${BASE_URL}${path}" | head -c 800
+  # Write to a temp file then truncate output. This avoids SIGPIPE noise (curl 23/56)
+  # when the consumer closes the pipe early.
+  tmp="$(mktemp 2>/dev/null || echo "/tmp/eth_a_smoke_${$}_$RANDOM")"
+  curl -fsS "${BASE_URL}${path}" -o "$tmp"
+  head -c 800 "$tmp"
+  rm -f "$tmp" 2>/dev/null || true
   echo
 }
 
@@ -19,4 +24,3 @@ fetch "/data/perf-summary"
 fetch "/data/iteration-latest"
 
 echo "OK"
-
