@@ -168,6 +168,9 @@ PROXY_PRIMARY=direct
 PROXY_FALLBACK=direct
 DOUBAO_DIRECT=true
 DOH_URL=
+DISCORD_WEBHOOK_URL=
+DISCORD_WEBHOOK_ALERT_URL=
+DASHBOARD_PUBLIC_URL=
 ```
 
 字段说明：
@@ -176,6 +179,9 @@ DOH_URL=
 - `DOUBAO_DIRECT`：true 表示直连豆包；false 时使用代理池
 - `PROXY_PRIMARY/PROXY_FALLBACK`：代理地址或 direct
 - `DOH_URL`：可选 DNS over HTTPS（如需）
+- `DISCORD_WEBHOOK_URL`：可选。日报推送 webhook；不填则跳过推送（不阻断日跑）
+- `DISCORD_WEBHOOK_ALERT_URL`：可选。报警推送 webhook；不填则复用 `DISCORD_WEBHOOK_URL`
+- `DASHBOARD_PUBLIC_URL`：可选。外网访问域名（用于 Discord 深链）；不填默认 `https://etha.mytagclash001.help`
 
 > 本仓库不会保存密钥，请仅在本地 `.env` 中维护。
 
@@ -211,6 +217,33 @@ DOH_URL=
 提示：AI 生成失败时会保留已成功部分，并提示失败状态。
 
 AI 超时：默认至少 5 分钟（由后端超时配置控制）。
+
+---
+
+## Push 通知（Discord Webhook，可选）
+
+用于“日报 + 关键变化报警”，把最短路径从 Pull（打开网页）变成 Push（消息直达）。
+
+启用方式：
+
+1) 在 `.env` 配置：
+
+```
+DISCORD_WEBHOOK_URL=...
+DISCORD_WEBHOOK_ALERT_URL=...
+DASHBOARD_PUBLIC_URL=https://etha.mytagclash001.help
+```
+
+2) NAS 日跑完成后会自动推送（不配置 webhook 则自动跳过，不会报错/阻断）。
+
+手动发送（本地或 NAS 均可）：
+
+```bash
+node scripts/discord_notify.mjs --type daily --date 2026-02-14
+node scripts/discord_notify.mjs --type alert --date 2026-02-14 --title "状态切换" --reason "A→C"
+```
+
+幂等：同一天的日报/同一类报警不会重复发送（可加 `--force` 强制发送）。
 
 ---
 
