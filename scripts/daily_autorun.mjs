@@ -11,6 +11,7 @@ import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder
 import { buildAiPayload } from "../src/ai/payload.js";
 import { buildPerfSummary } from "./perf_summary.mjs";
 import { buildIterationReport } from "./iteration_report.mjs";
+import { sendDiscordNotification } from "./discord_notify.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -747,6 +748,60 @@ async function main() {
     console.log(
       `daily autorun done: date=${args.date} status=${status.status} history=${mergedHistory.length} warnings=${warnings.length}`
     );
+
+    // Optional: Discord push (日报 + 关键变化报警). Must never block the main daily pipeline.
+    try {
+      await sendDiscordNotification({
+        type: "daily",
+        date: args.date,
+        baseUrl: env.DASHBOARD_PUBLIC_URL || "https://etha.mytagclash001.help",
+        record,
+        perfSummary,
+        dailyStatus: status,
+      });
+
+      const alerts = [];
+      const prev = mergedHistory.filter((item) => item?.date && item.date < args.date).slice(-1)[0] || null;
+      if (prev?.output?.state && prev.output.state !== record?.output?.state) {
+        alerts.push(`状态切换：${prev.output.state}→${record.output.state}`);
+      }
+      const prevBeta = typeof prev?.output?.beta === "number" ? prev.output.beta : null;
+      const prevCap = typeof prev?.output?.betaCap === "number" ? prev.output.betaCap : null;
+      if (prevBeta !== null && typeof record?.output?.beta === "number") {
+        const delta = Math.abs(record.output.beta - prevBeta);
+        if (delta >= 0.12) alerts.push(`β 变化：Δ${delta.toFixed(2)} ≥ 0.12`);
+      }
+      if (prevCap !== null && typeof record?.output?.betaCap === "number") {
+        const delta = Math.abs(record.output.betaCap - prevCap);
+        if (delta >= 0.12) alerts.push(`β_cap 变化：Δ${delta.toFixed(2)} ≥ 0.12`);
+      }
+      const drift7 = perfSummary?.drift?.["7"]?.level || "";
+      if (String(drift7).toLowerCase() === "warn" || String(drift7).toLowerCase() === "danger") {
+        alerts.push(`漂移门恶化：7D=${String(drift7).toUpperCase()}`);
+      }
+      const missing = Array.isArray(record?.input?.__missing) ? record.input.__missing : [];
+      if (missing.length) alerts.push(`缺失字段：${missing.slice(0, 6).join(", ")}${missing.length > 6 ? "..." : ""}`);
+      const freshness = record?.input?.__fieldFreshness || {};
+      const staleKeys = Object.keys(freshness || {}).filter((key) => freshness[key]?.level === "stale");
+      if (staleKeys.length) alerts.push(`过期字段：${staleKeys.slice(0, 6).join(", ")}${staleKeys.length > 6 ? "..." : ""}`);
+
+      if (alerts.length) {
+        await sendDiscordNotification({
+          type: "alert",
+          date: args.date,
+          key: "daily-alert",
+          title: "关键变化",
+          reason: alerts.join(" / "),
+          baseUrl: env.DASHBOARD_PUBLIC_URL || "https://etha.mytagclash001.help",
+          record,
+          perfSummary,
+          dailyStatus: status,
+        });
+      }
+    } catch (error) {
+      status.errors.push(`discord notify: ${error?.message || "failed"}`);
+      writeStatus(status);
+    }
   } catch (error) {
     const failedStage = status.phase || "unknown";
     status.status = "fail";

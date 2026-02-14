@@ -337,7 +337,7 @@ export function renderGateChain(container, gates, selectedId, onSelect) {
   }
 }
 
-export function renderAuditVisual(container, gate) {
+export function renderAuditVisual(container, gate, context = {}) {
   if (!container) return;
   if (!gate) {
     container.innerHTML = '<div class="inspector-empty">暂无审计信息</div>';
@@ -348,6 +348,10 @@ export function renderAuditVisual(container, gate) {
   const sources = details.sources || {};
   const calc = details.calc || {};
   const rules = details.rules || [];
+  const history = Array.isArray(context.history) ? context.history : [];
+  const currentDate = typeof context.currentDate === "string" ? context.currentDate : null;
+  const trendMap =
+    history.length && currentDate ? buildFieldTrendMap(history, currentDate, Object.keys(inputs)) : {};
   const inputEntries = Object.entries(inputs).sort(([a], [b]) => a.localeCompare(b));
   let staleCount = 0;
   let agingCount = 0;
@@ -370,6 +374,8 @@ export function renderAuditVisual(container, gate) {
       const observedAt = formatDataTime(timing.observedAt);
       const fetchedAt = formatDataTime(timing.fetchedAt);
       const freshness = timing.freshness?.label || "未知";
+      const trend = trendMap[key] || { text: "趋势样本不足", direction: "flat", series: [] };
+      const sparkline = renderMiniSparkline(trend.series);
       const label = fieldLabel(key);
       const display = formatAuditValue(value);
       const barWidth =
@@ -389,7 +395,12 @@ export function renderAuditVisual(container, gate) {
             </div>
             <div class="audit-value">${display}</div>
           </div>
-          <div class="audit-source">${source}<div class="audit-time">${freshness} · 观测 ${observedAt} · 抓取 ${fetchedAt}</div></div>
+          <div class="audit-source">
+            ${source}
+            <div class="audit-time">${freshness} · 观测 ${observedAt} · 抓取 ${fetchedAt}</div>
+            <div class="audit-trend audit-trend-${trend.direction || "flat"}">${trend.text || "趋势样本不足"}</div>
+            ${sparkline ? `<div class="audit-sparkline">${sparkline}</div>` : ""}
+          </div>
         </div>
       `;
     })
@@ -900,6 +911,56 @@ export function renderOutput(elements, record, history, meta = {}) {
     const next = (actionSummary.watch || []).slice(0, 2);
     elements.decisionNext.textContent = next.length ? next.join(" / ") : "暂无关键观察项";
   }
+
+  const perfSummary = meta && typeof meta === "object" ? meta.perfSummary : null;
+  if (elements.predictionSummaryValue) {
+    const maturity = perfSummary?.maturity || {};
+    const matured = Number.isFinite(maturity.matured) ? maturity.matured : 0;
+    const total = Number.isFinite(maturity.total) ? maturity.total : 0;
+    const ratio = Number.isFinite(maturity.ratio) ? maturity.ratio : total ? matured / total : 0;
+    const horizon7 = perfSummary?.byHorizon?.["7"] || {};
+    const horizon14 = perfSummary?.byHorizon?.["14"] || {};
+    const acc7 = typeof horizon7.accuracy === "number" ? horizon7.accuracy : null;
+    const acc14 = typeof horizon14.accuracy === "number" ? horizon14.accuracy : null;
+    const drift7 = perfSummary?.drift?.["7"]?.level || "--";
+    const drift14 = perfSummary?.drift?.["14"]?.level || "--";
+    const fmtAcc = (acc) => (typeof acc === "number" ? `${(acc * 100).toFixed(1)}%` : "--");
+    const fmtLevel = (level) => {
+      const raw = String(level || "").toLowerCase();
+      if (raw === "ok") return "OK";
+      if (raw === "warn") return "WARN";
+      if (raw === "danger") return "DANGER";
+      return "--";
+    };
+
+    elements.predictionSummaryValue.textContent = [
+      `成熟样本：${matured}/${total}${total ? `（${Math.round(ratio * 100)}%）` : ""}`,
+      `7D 命中率：${fmtAcc(acc7)} · 漂移：${fmtLevel(drift7)}`,
+      `14D 命中率：${fmtAcc(acc14)} · 漂移：${fmtLevel(drift14)}`,
+      `as-of：${perfSummary?.asOfDate || "--"}`,
+    ].join("\n");
+  }
+
+  if (elements.predictionSummaryEvalBtn && !elements.predictionSummaryEvalBtn.dataset.bound) {
+    elements.predictionSummaryEvalBtn.dataset.bound = "1";
+    elements.predictionSummaryEvalBtn.addEventListener("click", () => {
+      try {
+        window.__ethSetMobileTab?.("explain");
+      } catch {}
+      const target = document.getElementById("evalPanelSection");
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+  if (elements.predictionSummaryIterBtn && !elements.predictionSummaryIterBtn.dataset.bound) {
+    elements.predictionSummaryIterBtn.dataset.bound = "1";
+    elements.predictionSummaryIterBtn.addEventListener("click", () => {
+      try {
+        window.__ethSetMobileTab?.("explain");
+      } catch {}
+      const target = document.getElementById("iterationPanelSection");
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
   if (elements.runMetaTrust) {
     elements.runMetaTrust.textContent = health.level === "danger" ? "FAIL" : health.level === "warn" ? "WARN" : "OK";
     elements.runMetaTrust.className = health.level === "danger" ? "danger" : health.level === "warn" ? "warn" : "ok";
@@ -940,9 +1001,10 @@ export function renderOutput(elements, record, history, meta = {}) {
     elements.missingImpact.innerHTML = buildMissingImpact(record.input).map((item) => `<div>${item}</div>`).join("");
 
   renderKanban(elements, state, output);
+  const auditContext = { history, currentDate: record.date };
   renderGates(elements.gateList, elements.gateInspector, output.gates, (gate) => {
     renderGateChain(elements.gateChain, output.gates, gate.id);
-    renderAuditVisual(elements.auditVisual, gate);
+    renderAuditVisual(elements.auditVisual, gate, auditContext);
   });
   const gateMap = new Map(output.gates.map((gate) => [gate.id, gate]));
   renderReasons(
@@ -955,7 +1017,7 @@ export function renderOutput(elements, record, history, meta = {}) {
     elements.gateInspector,
     (gate) => {
       renderGateChain(elements.gateChain, output.gates, gate.id);
-      renderAuditVisual(elements.auditVisual, gate);
+      renderAuditVisual(elements.auditVisual, gate, auditContext);
     }
   );
   renderGateChain(elements.gateChain, output.gates, output.gates[0]?.id, (gate) => {
@@ -965,7 +1027,7 @@ export function renderOutput(elements, record, history, meta = {}) {
       elements.gateList?.querySelectorAll(".gate-item")?.forEach((node) => node.classList.remove("active"));
       gateNode.classList.add("active");
     }
-    renderAuditVisual(elements.auditVisual, gate);
+    renderAuditVisual(elements.auditVisual, gate, auditContext);
     renderInspector(elements.gateInspector, gate);
   });
   if (elements.evidenceHints) {
@@ -989,10 +1051,10 @@ export function renderOutput(elements, record, history, meta = {}) {
           gateNode.classList.add("active");
         }
         renderInspector(elements.gateInspector, gate);
-        renderAuditVisual(elements.auditVisual, gate);
+        renderAuditVisual(elements.auditVisual, gate, auditContext);
         renderGateChain(elements.gateChain, output.gates, gate.id, (selectedGate) => {
           renderInspector(elements.gateInspector, selectedGate);
-          renderAuditVisual(elements.auditVisual, selectedGate);
+          renderAuditVisual(elements.auditVisual, selectedGate, auditContext);
         });
       });
     });

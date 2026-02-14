@@ -6,7 +6,7 @@ import { evalSVC } from "../src/engine/rules/svc.js";
 import { evalLiquidity } from "../src/engine/rules/liquidity.js";
 import { evalDanger } from "../src/engine/rules/danger.js";
 import { runPipeline } from "../src/engine/pipeline.js";
-import { renderCoverage, renderOutput, renderTimelineOverview, renderGateChain } from "../src/ui/render.js";
+import { renderCoverage, renderOutput, renderTimelineOverview, renderGateChain, renderAuditVisual } from "../src/ui/render.js";
 import {
   buildActionSummary,
   buildHealthSummary,
@@ -22,6 +22,7 @@ import { formatUsd, buildTooltipText } from "../src/ui/formatters.js";
 import { deriveFieldTrend } from "../src/ui/fieldTrend.js";
 import { buildCombinedInput, refreshMissingFields } from "../src/ui/inputBuilder.js";
 import { createEtaTimer } from "../src/ui/etaTimer.js";
+import { parseDeepLink } from "../src/ui/deepLink.js";
 import { buildOverallPrompt, PROMPT_VERSION } from "../src/ai/prompts.js";
 import { buildAiPayload } from "../src/ai/payload.js";
 import { computePredictionEvaluation, deriveDriftSignal, renderPredictionEvaluation } from "../src/ui/eval.js";
@@ -288,6 +289,36 @@ function testStatusOverviewRenders() {
   assert(elements.statusOverview.innerHTML.includes("status-overview-bar"), "状态总览应渲染");
 }
 
+function testAuditVisualIncludesTrends() {
+  const container = createNode();
+  const history = [
+    { date: "2026-02-01", input: { us2yWeekBp: -12 } },
+    { date: "2026-02-13", input: { us2yWeekBp: 5 } },
+  ];
+  const gate = {
+    id: "G0",
+    name: "宏观总闸门",
+    status: "closed",
+    note: "宏观紧缩关门",
+    details: {
+      inputs: { us2yWeekBp: 5 },
+      sources: { us2yWeekBp: "FRED: DGS2" },
+      timings: {
+        us2yWeekBp: {
+          observedAt: "2026-02-13T00:00:00Z",
+          fetchedAt: "2026-02-13T01:00:00Z",
+          freshness: { level: "fresh", label: "新鲜" },
+        },
+      },
+      calc: {},
+      rules: ["2Y 收益率上行"],
+    },
+  };
+  renderAuditVisual(container, gate, { history, currentDate: "2026-02-13" });
+  assert(container.innerHTML.includes("audit-trend"), "审计输入应展示趋势行");
+  assert(container.innerHTML.includes("coverage-sparkline-svg"), "审计输入应渲染 mini sparkline");
+}
+
 function testRenderCoverageMissing() {
   const container = createNode();
   const input = {
@@ -499,6 +530,10 @@ function testLayoutSkeleton() {
     "decisionExecutable",
     "decisionWhy",
     "decisionNext",
+    "predictionSummaryCard",
+    "predictionSummaryValue",
+    "predictionSummaryEvalBtn",
+    "predictionSummaryIterBtn",
     "timelineOverview",
     "timelineRange",
     "timelineLabel",
@@ -522,6 +557,9 @@ function testLayoutSkeleton() {
     "viewPlainBtn",
     "viewExpertBtn",
     "evalPanel",
+    "iterationPanelSection",
+    "iterationMeta",
+    "iterationBody",
     "backfill90Btn",
     "backfill180Btn",
     "backfill365Btn",
@@ -536,6 +574,91 @@ function testLayoutSkeleton() {
     assert(html.includes(`id=\"${id}\"`), `布局应包含 ${id}`);
   });
   assert(html.includes("自动模式"), "数据台应明确自动模式优先");
+}
+
+function testPredictionSummaryCardWiresToEval() {
+  const kanbanCol = createNode("div");
+  const evalPanelSection = createNode("section");
+  evalPanelSection.hidden = true;
+  const called = [];
+  global.window = {
+    __ethSetMobileTab(tab) {
+      called.push(tab);
+      if (tab === "explain") {
+        evalPanelSection.hidden = false;
+      }
+    },
+  };
+  global.document = {
+    body: { classList: { add() {}, remove() {} }, dataset: {} },
+    querySelectorAll() {
+      return [kanbanCol, kanbanCol, kanbanCol];
+    },
+    querySelector() {
+      return kanbanCol;
+    },
+    createElement(tag) {
+      return createNode(tag);
+    },
+    getElementById(id) {
+      if (id === "evalPanelSection") return evalPanelSection;
+      return null;
+    },
+  };
+  const elements = {
+    statusBadge: createNode(),
+    statusTitle: createNode(),
+    statusSub: createNode(),
+    betaValue: createNode(),
+    hedgeValue: createNode(),
+    phaseValue: createNode(),
+    confidenceValue: createNode(),
+    extremeValue: createNode(),
+    distributionValue: createNode(),
+    lastRun: createNode(),
+    gateList: createNode(),
+    gateInspector: createNode(),
+    topReasons: createNode(),
+    riskNotes: createNode(),
+    evidenceHints: createNode(),
+    betaChart: createNode(),
+    confidenceChart: createNode(),
+    fofChart: createNode(),
+    kanbanA: createNode(),
+    kanbanB: createNode(),
+    kanbanC: createNode(),
+    predictionSummaryValue: createNode(),
+    predictionSummaryEvalBtn: createNode("button"),
+    predictionSummaryIterBtn: createNode("button"),
+  };
+  const record = {
+    date: "2026-02-13",
+    input: { ...baseInput(), ethSpotPrice: 2300 },
+    output: runPipeline(baseInput()),
+  };
+  renderOutput(
+    elements,
+    record,
+    [record],
+    {
+      perfSummary: {
+        asOfDate: "2026-02-13",
+        maturity: { matured: 8, total: 10, ratio: 0.8 },
+        byHorizon: {
+          "7": { total: 8, hit: 4, accuracy: 0.5, thresholdPct: 5, byState: {} },
+          "14": { total: 5, hit: 3, accuracy: 0.6, thresholdPct: 8, byState: {} },
+        },
+        drift: { "7": { level: "warn", note: "样本略少" }, "14": { level: "ok", note: "" } },
+      },
+    }
+  );
+  assert(
+    (elements.predictionSummaryValue.textContent || "").includes("成熟"),
+    "预测闭环摘要应渲染成熟度信息"
+  );
+  elements.predictionSummaryEvalBtn.__handlers.click?.();
+  assert(called.includes("explain"), "点击查看评估应切换到 explain Tab");
+  assert(evalPanelSection.hidden === false, "点击查看评估后评估区应可见");
 }
 
 function testCacheBustingAssets() {
@@ -581,6 +704,14 @@ function testAppLoadsPerfSummary() {
   assert(
     source.includes("/data/perf-summary"),
     "启动应加载 perf-summary（run/perf_summary.json）用于展示每日性能摘要"
+  );
+}
+
+function testAppMobileTabsIncludeIterationPanel() {
+  const source = readFileSync(new URL("../src/app.js", import.meta.url), "utf-8");
+  assert(
+    source.includes("iterationPanelSection"),
+    "移动端 explain Tab 应包含 iterationPanelSection（迭代建议可见）"
   );
 }
 
@@ -798,6 +929,11 @@ function testDevScriptUsesServer() {
   assert(dev.includes("scripts/server.py"), "备用启动脚本应使用 server.py，保证 API 可用");
 }
 
+function testServerExposesIterationLatest() {
+  const server = readFileSync(new URL("../scripts/server.py", import.meta.url), "utf-8");
+  assert(server.includes("/data/iteration-latest"), "server 应提供 /data/iteration-latest 以便前端展示迭代建议");
+}
+
 function testDailyAutorunUpdatesEthPriceSeed() {
   const daily = readFileSync(new URL("../scripts/daily_autorun.mjs", import.meta.url), "utf-8");
   assert(daily.includes("eth_price_seed.py"), "daily_autorun 应生成 eth.price.seed.json（价格种子）");
@@ -806,6 +942,7 @@ function testDailyAutorunUpdatesEthPriceSeed() {
   assert(daily.includes("buildPerfSummary"), "daily_autorun 应复用 buildPerfSummary 生成性能摘要");
   assert(daily.includes("iteration_report.mjs"), "daily_autorun 应生成每日迭代建议报告（iteration_report.mjs）");
   assert(daily.includes("buildIterationReport"), "daily_autorun 应复用 buildIterationReport 生成迭代建议报告");
+  assert(daily.includes("discord_notify.mjs"), "daily_autorun 应支持 Discord Webhook 推送（日报/报警）");
 }
 
 async function testPerfSummaryBuilder() {
@@ -848,6 +985,36 @@ async function testIterationReportBuilder() {
   assert(typeof report === "string" && report.includes("迭代建议"), "迭代报告应输出可读 Markdown 文本");
 }
 
+async function testDiscordMessageBuilder() {
+  const mod = await import("../scripts/discord_notify.mjs");
+  const buildDiscordMessage = mod.buildDiscordMessage;
+  assert(typeof buildDiscordMessage === "function", "应暴露 buildDiscordMessage(...) 生成 Discord 文本消息");
+  const record = {
+    date: "2026-02-13",
+    input: { ...baseInput(), __sources: { dxy5d: "FRED" } },
+    output: runPipeline(baseInput()),
+  };
+  const payload = buildDiscordMessage({
+    type: "daily",
+    baseUrl: "https://etha.mytagclash001.help",
+    date: "2026-02-13",
+    record,
+    perfSummary: {
+      asOfDate: "2026-02-13",
+      maturity: { matured: 8, total: 10, ratio: 0.8 },
+      byHorizon: { "7": { accuracy: 0.5, hit: 4, total: 8 }, "14": { accuracy: 0.6, hit: 3, total: 5 } },
+      drift: { "7": { level: "warn" }, "14": { level: "ok" } },
+    },
+    dailyStatus: { status: "ok" },
+    iterationExcerpt: "迭代建议：保持谨慎。",
+  });
+  assert(
+    typeof payload?.content === "string" && payload.content.includes("2026-02-13"),
+    "Discord 消息应包含日期"
+  );
+  assert(payload.content.includes("etha.mytagclash001.help?date=2026-02-13"), "Discord 消息应包含深链");
+}
+
 function testEtaTimerTotals() {
   const timer = createEtaTimer();
   timer.start("fetch", 0);
@@ -856,6 +1023,16 @@ function testEtaTimerTotals() {
   timer.end("compute", 2500);
   const total = timer.totalMs();
   assert(total === 2500, "总耗时应为各阶段累加");
+}
+
+function testParseDeepLink() {
+  const parsed = parseDeepLink("?date=2026-02-01&tab=explain", "#evalPanelSection");
+  assert(parsed.date === "2026-02-01", "deep link 应解析 date 参数");
+  assert(parsed.tab === "explain", "deep link 应解析 tab 参数");
+  assert(parsed.hash === "#evalPanelSection", "deep link 应保留 hash");
+  const invalid = parseDeepLink("?date=2026-2-1&tab=wat", "");
+  assert(invalid.date === null, "非法 date 应返回 null");
+  assert(invalid.tab === null, "非法 tab 应返回 null");
 }
 
 function testPredictionEvaluationBasic() {
@@ -1324,6 +1501,7 @@ async function run() {
   testDistributionBoost();
   testRenderOutputInspector();
   testStatusOverviewRenders();
+  testAuditVisualIncludesTrends();
   testRenderCoverageMissing();
   testRenderCoverageDerivedGroups();
   testBuildAiPayload();
@@ -1334,11 +1512,13 @@ async function run() {
   testHalfLifeGateClearsStale();
   testMergeInputsPreferFresh();
   testLayoutSkeleton();
+  testPredictionSummaryCardWiresToEval();
   testCacheBustingAssets();
   testNoInlineRunOnclick();
   testAppAutoFetchEndpoint();
   testAppLoadsEthPriceSeed();
   testAppLoadsPerfSummary();
+  testAppMobileTabsIncludeIterationPanel();
   testStyleTokens();
   testRenderOutputActionVariableNaming();
   testAppDoesNotImportRefreshMissingFields();
@@ -1359,10 +1539,13 @@ async function run() {
   testRefreshMissingFieldsOverridesStaleMissing();
   testGateChainHasNodes();
   testDevScriptUsesServer();
+  testServerExposesIterationLatest();
   testDailyAutorunUpdatesEthPriceSeed();
   await testPerfSummaryBuilder();
   await testIterationReportBuilder();
+  await testDiscordMessageBuilder();
   testEtaTimerTotals();
+  testParseDeepLink();
   testPredictionEvaluationBasic();
   testPredictionEvaluationAsOfGuard();
   testPredictionEvaluationUsesPriceSeed();

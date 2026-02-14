@@ -170,6 +170,14 @@
             <div class="decision-label">下一步看什么</div>
             <div class="decision-sub" id="decisionNext">--</div>
           </div>
+          <div class="decision-card decision-card-wide" id="predictionSummaryCard">
+            <div class="decision-label">预测闭环摘要</div>
+            <div class="decision-sub" id="predictionSummaryValue">--</div>
+            <div class="decision-actions">
+              <button id="predictionSummaryEvalBtn" class="ghost" type="button">查看评估</button>
+              <button id="predictionSummaryIterBtn" class="ghost" type="button">查看迭代建议</button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -341,6 +349,12 @@
           <div id="evalBackfillStatus" class="eval-backfill-status">可选：先补齐历史样本，再看命中率。</div>
         </div>
         <div id="evalPanel" class="eval-body"></div>
+      </section>
+
+      <section class="panel iteration-panel stage-marker stage-explain" id="iterationPanelSection" data-layout-mode="explain" data-mobile-collapsible="true">
+        <div class="panel-title">迭代建议 · 自动生成</div>
+        <div class="iteration-meta" id="iterationMeta">--</div>
+        <pre class="iteration-body" id="iterationBody">今日尚未生成迭代建议。</pre>
       </section>
 
       <section class="panel data-panel stage-marker stage-data" id="dataPanelSection" data-layout-mode="data" data-mobile-collapsible="true">

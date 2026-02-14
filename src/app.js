@@ -19,6 +19,7 @@ import { buildCombinedInput } from "./ui/inputBuilder.js";
 import { createEtaTimer } from "./ui/etaTimer.js";
 import { fieldMeta } from "./ui/fieldMeta.js";
 import { deriveDriftSignal } from "./ui/eval.js";
+import { parseDeepLink } from "./ui/deepLink.js";
 
 const storageKey = "eth_a_dashboard_history_v201";
 const inputKey = "eth_a_dashboard_custom_input";
@@ -33,6 +34,7 @@ const aiSeedPath = "/data/ai.seed.json";
 const dailyStatusPath = "/data/daily-status";
 const backfillStatusPath = "/data/backfill-status";
 const perfSummaryPath = "/data/perf-summary";
+const iterationLatestPath = "/data/iteration-latest";
 const ethPriceSeedPath = "/data/eth.price.seed.json";
 
 const elements = {
@@ -96,6 +98,9 @@ const elements = {
   decisionExecutable: document.getElementById("decisionExecutable"),
   decisionWhy: document.getElementById("decisionWhy"),
   decisionNext: document.getElementById("decisionNext"),
+  predictionSummaryValue: document.getElementById("predictionSummaryValue"),
+  predictionSummaryEvalBtn: document.getElementById("predictionSummaryEvalBtn"),
+  predictionSummaryIterBtn: document.getElementById("predictionSummaryIterBtn"),
   statusOverview: document.getElementById("statusOverview"),
   keyEvidence: document.getElementById("keyEvidence"),
   etaValue: document.getElementById("etaValue"),
@@ -135,6 +140,8 @@ const elements = {
   backfill180Btn: document.getElementById("backfill180Btn"),
   backfill365Btn: document.getElementById("backfill365Btn"),
   evalBackfillStatus: document.getElementById("evalBackfillStatus"),
+  iterationMeta: document.getElementById("iterationMeta"),
+  iterationBody: document.getElementById("iterationBody"),
   runAdvice: document.getElementById("runAdvice"),
   runAdviceBody: document.getElementById("runAdviceBody"),
   quickFetchBtn: document.getElementById("quickFetchBtn"),
@@ -499,6 +506,48 @@ async function loadPerfSummary() {
     return normalizePerfSummary(await response.json());
   } catch {
     return null;
+  }
+}
+
+function normalizeIterationLatest(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const status = String(payload.status || "").toLowerCase();
+  const content = typeof payload.content === "string" ? payload.content : "";
+  return {
+    status: status || "unknown",
+    date: payload.date || null,
+    updatedAt: payload.updatedAt || null,
+    content,
+    error: payload.error || null,
+  };
+}
+
+async function loadIterationLatest() {
+  try {
+    const response = await fetch(`${iterationLatestPath}?ts=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    return normalizeIterationLatest(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+function applyIterationLatest(iteration) {
+  iterationLatestCache = iteration || null;
+  if (!elements.iterationBody && !elements.iterationMeta) return;
+  if (!iteration || iteration.status === "missing") {
+    if (elements.iterationMeta) elements.iterationMeta.textContent = "未生成";
+    if (elements.iterationBody) elements.iterationBody.textContent = "今日尚未生成迭代建议。";
+    return;
+  }
+  if (elements.iterationMeta) {
+    const dateText = iteration.date ? `date=${iteration.date}` : "";
+    const timeText = iteration.updatedAt ? `更新 ${formatRunTimestamp(iteration.updatedAt)}` : "";
+    elements.iterationMeta.textContent = [dateText, timeText].filter(Boolean).join(" · ") || "--";
+  }
+  if (elements.iterationBody) {
+    elements.iterationBody.textContent =
+      iteration.content || (iteration.error ? `读取失败：${iteration.error}` : "迭代建议为空。");
   }
 }
 
@@ -1243,8 +1292,14 @@ let historyWindow = buildDateWindow(new Date(), 365);
 let aiSeedByDate = {};
 let ethPriceSeedByDate = null;
 let perfSummaryCache = null;
+let iterationLatestCache = null;
 let dailyStatusCache = null;
 let backfillPollTimer = null;
+
+const deepLink =
+  typeof window !== "undefined" && window.location
+    ? parseDeepLink(window.location.search || "", window.location.hash || "")
+    : { date: null, tab: null, hash: "" };
 
 function setupQuickNav() {
   if (!elements.quickNav) return;
@@ -1395,6 +1450,7 @@ function setupMobileTabs() {
       document.getElementById("aiPanelSection"),
       document.getElementById("trendPanel"),
       document.getElementById("evalPanelSection"),
+      document.getElementById("iterationPanelSection"),
     ],
     audit: [
       document.getElementById("gateAuditPanel"),
@@ -1469,6 +1525,7 @@ function setupMobileTabs() {
   };
 
   const resolveInitialTab = () => {
+    if (deepLink.tab) return clampTab(deepLink.tab);
     const hashTab = tabForHash(window.location.hash);
     if (hashTab) return hashTab;
     try {
@@ -2488,19 +2545,21 @@ async function bootstrapHistoryView() {
   const local = normalizeHistoryRecords(loadHistory());
   const cached = local.length ? [] : normalizeHistoryRecords(loadCachedHistory() || []);
   // Mobile users should see today's snapshot immediately; full history (27MB) can load later.
-  const [latestSeed, seedAi, dailyStatus, backfillStatus, ethPriceSeed, perfSummary] = await Promise.all([
+  const [latestSeed, seedAi, dailyStatus, backfillStatus, ethPriceSeed, perfSummary, iterationLatest] = await Promise.all([
     loadSeedLatest(),
     loadSeedAi(),
     loadDailyStatus(),
     loadBackfillStatus(),
     loadEthPriceSeed(),
     loadPerfSummary(),
+    loadIterationLatest(),
   ]);
 
   aiSeedByDate = seedAi || {};
   ethPriceSeedByDate = ethPriceSeed?.byDate || null;
   perfSummaryCache = perfSummary || null;
   applyDailyStatusMeta(dailyStatus);
+  applyIterationLatest(iterationLatest);
 
   if (backfillStatus) {
     setEvalBackfillStatus(formatBackfillStatusText(backfillStatus));
@@ -2519,7 +2578,7 @@ async function bootstrapHistoryView() {
 
   if (history.length) {
     saveHistory(history);
-    renderSnapshot(history, latestSeed?.date || null);
+    renderSnapshot(history, deepLink.date || latestSeed?.date || null);
     const latest = history[history.length - 1];
     const seededAi = latest?.date ? aiSeedByDate?.[latest.date] : null;
     if (seededAi) {
@@ -2548,6 +2607,14 @@ async function bootstrapHistoryView() {
   } else {
     renderTimeline([], null);
   }
+
+  // Deep link: after initial render, scroll to hash target (if any).
+  try {
+    if (deepLink.hash) {
+      const target = document.querySelector(deepLink.hash);
+      target?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    }
+  } catch {}
 
   const today = dateKey();
   const dailyReady =

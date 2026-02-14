@@ -38,6 +38,7 @@ def should_disable_cache(path):
         "/data/daily-status",
         "/data/backfill-status",
         "/data/perf-summary",
+        "/data/iteration-latest",
     )
 
 
@@ -230,6 +231,28 @@ def load_perf_summary():
     return {"status": "fail", "asOfDate": None, "generatedAt": None}
 
 
+def load_iteration_latest():
+    iteration_dir = os.path.join(RUN_ROOT, "iteration")
+    if not os.path.exists(iteration_dir):
+        return {"status": "missing", "date": None, "updatedAt": None, "content": ""}
+    try:
+        files = sorted([f for f in os.listdir(iteration_dir) if f.endswith(".md")])
+    except Exception:
+        files = []
+    if not files:
+        return {"status": "missing", "date": None, "updatedAt": None, "content": ""}
+    filename = files[-1]
+    report_path = os.path.join(iteration_dir, filename)
+    try:
+        with open(report_path, "r", encoding="utf-8") as fp:
+            content = fp.read()
+        updated_at = datetime.fromtimestamp(os.path.getmtime(report_path)).isoformat()
+        date = os.path.splitext(filename)[0]
+        return {"status": "ok", "date": date, "updatedAt": updated_at, "content": content}
+    except Exception as exc:
+        return {"status": "fail", "date": None, "updatedAt": None, "content": "", "error": str(exc)}
+
+
 def node_binary():
     candidates = [
         which("node"),
@@ -365,6 +388,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if request_path == "/data/perf-summary":
             self._send_json(load_perf_summary())
+            return
+        if request_path == "/data/iteration-latest":
+            self._send_json(load_iteration_latest())
             return
         if request_path == "/ai/status":
             env = load_env(ENV_PATH)

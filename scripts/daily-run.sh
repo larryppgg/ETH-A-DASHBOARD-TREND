@@ -11,12 +11,14 @@ LOG_FILE="$LOG_DIR/daily-run.log"
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 cd "$APP_DIR"
 
-NODE_BIN="${NODE_BIN:-$(command -v node 2>/dev/null || true)}"
+NODE_BIN="${NODE_BIN:-}"
 if [ -z "$NODE_BIN" ]; then
   if [ -x "/usr/local/bin/node" ]; then
     NODE_BIN="/usr/local/bin/node"
   elif [ -x "/volume1/@appstore/Node.js_v20/usr/local/bin/node" ]; then
     NODE_BIN="/volume1/@appstore/Node.js_v20/usr/local/bin/node"
+  else
+    NODE_BIN="$(command -v node 2>/dev/null || true)"
   fi
 fi
 
