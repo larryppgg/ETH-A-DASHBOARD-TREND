@@ -258,6 +258,7 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
   const horizons = [7, 14];
   const thresholds = { 7: 5, 14: 8 };
   const asOfDate = focusRecord?.date || null;
+  const perf = meta?.perfSummary && typeof meta.perfSummary === "object" ? meta.perfSummary : null;
   const evaluation = computePredictionEvaluation(history, {
     horizons,
     thresholds,
@@ -286,7 +287,14 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
   const cards = horizons
     .map((days) => {
       const key = String(days);
-      const info = evaluation.summary.byHorizon[key] || {};
+      const evalInfo = evaluation.summary.byHorizon[key] || {};
+      const perfInfo = perf?.byHorizon?.[key] || {};
+      const info =
+        (evalInfo.total ?? 0) > 0
+          ? evalInfo
+          : (perfInfo.total ?? 0) > 0
+            ? perfInfo
+            : evalInfo;
       const accuracy = info.accuracy === null ? "--" : formatPct(info.accuracy * 100, 1);
       const total = info.total ?? 0;
       const hit = info.hit ?? 0;
@@ -299,10 +307,25 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
       `;
     })
     .join("");
+  const perfDrift7 = perf?.drift?.["7"] || null;
+  const driftDisplay =
+    drift.accuracy !== null || !perfDrift7 || typeof perfDrift7.accuracy !== "number"
+      ? drift
+      : {
+          ...drift,
+          level: perfDrift7.level || drift.level,
+          label: perfDrift7.label || drift.label,
+          accuracy: perfDrift7.accuracy,
+          baseline: perfDrift7.baseline ?? drift.baseline,
+          sampleSize: perfDrift7.sampleSize ?? drift.sampleSize,
+          hitCount: perfDrift7.hitCount ?? drift.hitCount,
+          betaMultiplier: perfDrift7.betaMultiplier ?? drift.betaMultiplier,
+          note: perfDrift7.note || drift.note,
+        };
   const driftText =
-    drift.accuracy === null
-      ? drift.note
-      : `${drift.note} · 样本 ${drift.hitCount}/${drift.sampleSize}`;
+    driftDisplay.accuracy === null
+      ? driftDisplay.note
+      : `${driftDisplay.note} · 样本 ${driftDisplay.hitCount}/${driftDisplay.sampleSize}`;
 
   const horizonKeys = horizons.map((days) => String(days));
   const maturedRows = evaluation.rows.filter((row) =>
@@ -342,10 +365,8 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
     })
     .join("");
 
-  const perf = meta?.perfSummary && typeof meta.perfSummary === "object" ? meta.perfSummary : null;
   const perfH7 = perf?.byHorizon?.["7"] || null;
   const perfH14 = perf?.byHorizon?.["14"] || null;
-  const perfDrift7 = perf?.drift?.["7"] || null;
   const perfNote =
     perf && perf.status && perf.status !== "missing" && perf.status !== "fail"
       ? `
@@ -376,7 +397,7 @@ export function renderPredictionEvaluation(container, history = [], focusRecord 
       </div>
       <div class="eval-card">
         <div class="k">漂移监控</div>
-        <div class="v">${drift.label}</div>
+        <div class="v">${driftDisplay.label}</div>
         <div class="s">${driftText}</div>
       </div>
       <div class="eval-card">
