@@ -165,7 +165,9 @@ function cloneJson(value) {
 }
 
 function normalizeViewMode(mode) {
-  return mode === "expert" ? "expert" : "plain";
+  // Product decision: keep a single user-facing view to avoid split cognitive load.
+  void mode;
+  return "plain";
 }
 
 function setButtonActive(button, active) {
@@ -183,8 +185,8 @@ function applyViewMode(mode) {
     }
     document.body.dataset.viewMode = resolved;
   }
-  setButtonActive(elements.viewPlainBtn, resolved === "plain");
-  setButtonActive(elements.viewExpertBtn, resolved === "expert");
+  setButtonActive(elements.viewPlainBtn, true);
+  setButtonActive(elements.viewExpertBtn, false);
 }
 
 function setViewMode(mode, { rerender = false } = {}) {
@@ -2370,7 +2372,6 @@ elements.runBtn.addEventListener("click", () => {
 });
 elements.clearBtn.addEventListener("click", clearHistory);
 elements.viewPlainBtn?.addEventListener("click", () => setViewMode("plain", { rerender: true }));
-elements.viewExpertBtn?.addEventListener("click", () => setViewMode("expert", { rerender: true }));
 elements.applyInputBtn?.addEventListener("click", applyCustomInput);
 elements.resetInputBtn?.addEventListener("click", resetCustomInput);
 elements.exportJsonBtn?.addEventListener("click", () => exportJson(loadHistory()));

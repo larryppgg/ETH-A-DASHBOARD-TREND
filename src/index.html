@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ETH-A Dashboard Trend</title>
-    <link rel="stylesheet" href="styles.css?v=20260213-2" />
+    <link rel="stylesheet" href="styles.css?v=20260219-1" />
   </head>
   <body>
     <div class="grid-sheen"></div>
@@ -20,9 +20,10 @@
         <p>战情级策略看板 · 全链路可审计 · 日度快照与历史趋势</p>
       </div>
       <div class="masthead-actions">
-        <div class="view-toggle" aria-label="视图切换">
-          <button id="viewPlainBtn" class="ghost view active" type="button">通俗</button>
-          <button id="viewExpertBtn" class="ghost view" type="button">专家</button>
+        <div class="view-toggle view-toggle-single" aria-label="视图模式">
+          <span class="view-single-label">单一研究视图</span>
+          <button id="viewPlainBtn" class="ghost view active view-hidden" type="button" tabindex="-1" aria-hidden="true">通俗</button>
+          <button id="viewExpertBtn" class="ghost view view-hidden" type="button" tabindex="-1" aria-hidden="true">专家</button>
         </div>
         <button id="runBtn" class="cta">今日运行</button>
         <div class="last-run">Last Run: <span id="lastRun">--</span></div>
@@ -439,7 +440,7 @@
     <button id="runFloatingBtn" class="cta cta-floating" type="button" aria-label="今日运行（悬浮按钮）">
       <span class="cta-floating-dot" aria-hidden="true"></span>
       <span class="cta-floating-main">今日运行</span>
-      <span class="cta-floating-sub">ETA <span id="runFloatingEta">--</span></span>
+      <span class="cta-floating-sub"><span id="runFloatingEta">--</span></span>
     </button>
 
     <footer class="footer">
@@ -455,6 +456,6 @@
         }
       })();
     </script>
-    <script type="module" src="app.js?v=20260213-4"></script>
+    <script type="module" src="app.js?v=20260219-1"></script>
   </body>
 </html>
